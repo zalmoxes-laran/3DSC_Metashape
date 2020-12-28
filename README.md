@@ -9,7 +9,7 @@ This collection of scripts is aimed to make it possible a pipeline between Metas
 1b - prepare a folder with meshes (tiles) to be texturized and, eventually with a txt file (I suggest SHIFT.txt as a name) with shifting coordinates values. This file should contain a single line like this: "EPSG::3004 1000 1000 0" that means that Metashape will import meshes as EPSG:3004 (don't miss the double ":") shifting the coordinates of 1000 units on x and y axes (no shifting on z axis).
 1c - start the script and, when asked, select the folder that contains the meshes (OBJs) and eventually the txt file. Metashape will create several chunks for each imported mesh .
  
-2 - "3DSC_MS_texturize": This script will texturize the chunks (imported meshes) using the Demetrescu-d'Annibale formula to texture resolution.
+2 - "3DSC_MS_texturize": This script will texturize the chunks (imported meshes) using the Demetrescu-d'Annibale formula to texture resolution (100squared meters with 6x4096px = 1.26mm/px resolution, suitable for HI resolution VR experiences).
 
 3 - "3DSC_MS_rename_chunks": This script will rename the chunks using a numbered list (1,2,3 etc..). In the majority of cases you need to do it.
 
