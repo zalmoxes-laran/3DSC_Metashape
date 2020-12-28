@@ -1,7 +1,7 @@
 # 3DSC_Metashape
 3DSC tools for Metashape
 
-This collection of scripts is aimed to make it possible a pipeline between Metashape and Blender 3DSC addon (3D survey collection). Using these add-ons you can:
+This collection of scripts is aimed to make it possible a pipeline between Metashape and Blender 3DSC addon (3D survey collection). Using these scripts you can:
 
 1 - "3DSC_MS_import_multiple_models": import a folder with a series of mesh tiles (OBJs) prepared in Blender using the 3DSC add-on.
 
