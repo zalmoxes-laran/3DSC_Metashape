@@ -7,5 +7,5 @@ chunk = doc.chunk
 number = 1
 for i in range(1, len(doc.chunks)):
     chunk = doc.chunks[i]
-    chunk.label = str(number)
+    chunk.label = str(number)+"_mt"
     number += 1
