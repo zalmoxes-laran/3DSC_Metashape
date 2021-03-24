@@ -4,7 +4,7 @@ import os
 import Metashape as ps
 
 doc = ps.app.document
-print("CIAO")
+print("Benvenuto nell'importer 3DSC")
 ps.app.update()
 
 # get folder of 3d models
@@ -39,7 +39,7 @@ for ob in file_list:
     if ob.rsplit(".",1)[1] in ["obj", "ply", "dae"]:
         format_file = str(ob.rsplit(".",1)[1])
         if format_file == "obj":
-            format_file = "ModelFormatOBJ"
+            format_file_import = ps.ModelFormat.ModelFormatOBJ
         ob_fullpath = str(path_folder + ob)
         obj_list.append(ob_fullpath)
         print(ob)
@@ -48,9 +48,9 @@ for ob in file_list:
         doc.chunk = doc.chunks[chuncknumber]
         doc.chunk.label = ob
         if coord_shift is True:
-           doc.chunk.importModel(path= ob_fullpath, format= ps.ModelFormat.ModelFormatOBJ,crs = ps.CoordinateSystem(projection_coor), shift = shift_coor)
+           doc.chunk.importModel(path= ob_fullpath, format= format_file_import,crs = ps.CoordinateSystem(projection_coor), shift = shift_coor)
         else:
-            doc.chunk.importModel(path= ob_fullpath, format= format_file)
+            doc.chunk.importModel(path= ob_fullpath, format= format_file_import)
         chuncknumber +=1
     else:
         pass
