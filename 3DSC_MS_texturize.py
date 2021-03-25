@@ -52,11 +52,16 @@ for chunk in doc.chunks:
         #raise Exception("No model!")
     else:
         current_model = chunk.model
+        area_model = 0.0
         area_model = current_model.area()
-        tex_num = tex_num_from_area(area_model,x_res_a_terra,tex,ratio)
-        print(chunk.label+" has an area of "+str(area_model)+" mq and needs "+str(int(tex_num))+" textures.")
-        chunk.buildUV(mapping_mode=ps.GenericMapping, page_count=tex_num, texture_size=tex)
-        chunk.buildTexture(blending_mode = ps.MosaicBlending, texture_size=tex, fill_holes=True, ghosting_filter=True)
+        if area_model == 0.0:
+            print(chunk.label+" has no area. Maybe the model isn't metric. It means that there aren't GCP or GPS information in the chunk.")
+            pass
+        else:
+            tex_num = tex_num_from_area(area_model,x_res_a_terra,tex,ratio)
+            print(chunk.label+" has an area of "+str(area_model)+" mq and needs "+str(int(tex_num))+" textures.")
+            chunk.buildUV(mapping_mode=ps.GenericMapping, page_count=tex_num, texture_size=tex)
+            chunk.buildTexture(blending_mode = ps.MosaicBlending, texture_size=tex, fill_holes=True, ghosting_filter=True)
 
 ps.app.update()
 print("step finished")
