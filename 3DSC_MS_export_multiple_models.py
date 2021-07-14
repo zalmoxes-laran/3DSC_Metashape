@@ -3,6 +3,7 @@
 import os
 import Metashape as ps
 
+doc = ps.app.document
 chunk = doc.chunk
 
 # get folder of 3d models
