@@ -54,6 +54,8 @@ for chunk in doc.chunks:
         current_model = chunk.model
         area_model = 0.0
         area_model = current_model.area()
+        if area_model == None:
+            pass
         if area_model == 0.0:
             print(chunk.label+" has no area. Maybe the model isn't metric. It means that there aren't GCP or GPS information in the chunk.")
             pass
