@@ -36,6 +36,8 @@ for ob_txt in file_list:
 obj_list = list()
 chuncknumber = 1
 for ob in file_list:
+    if ob.startswith("."):
+        pass
     if ob.rsplit(".",1)[1] in ["obj", "ply", "dae"]:
         format_file = str(ob.rsplit(".",1)[1])
         if format_file == "obj":
