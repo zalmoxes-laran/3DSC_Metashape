@@ -531,6 +531,8 @@ class MetashapeTools:
             
             # Find and process the camera alignment data from JSON files
             cameras_with_data = 0
+            camera_positions = []  # To track camera positions for region calculation
+            
             for i, camera in enumerate(chunk.cameras):
                 image_name = os.path.splitext(os.path.basename(camera.photo.path))[0]
                 json_file = os.path.join(image_folder, image_name + ".json")
@@ -549,16 +551,38 @@ class MetashapeTools:
                                     print(f"Unexpected matrix size for {image_name}: {len(camera_matrix)} elements")
                                     continue
                                 
-                                # Crea la matrice di trasformazione direttamente
-                                transform = ps.Matrix([
+                                # Converti sistema di coordinate ARKit (Y-up) a Metashape (Z-up)
+                                # ARKit: Y-up, Z forward, X right
+                                # Metashape: Z-up, X right, Y forward (o variante - verificare in fase di test)
+                                
+                                # Crea una matrice di trasformazione per conversione di coordinate
+                                # Questa è una rotazione che adatta il sistema ARKit a Metashape
+                                arkit_to_metashape = ps.Matrix([
+                                    [1, 0, 0, 0],
+                                    [0, 0, 1, 0],
+                                    [0, -1, 0, 0],
+                                    [0, 0, 0, 1]
+                                ])
+                                
+                                # Crea la matrice di trasformazione ARKit
+                                ar_transform = ps.Matrix([
                                     [camera_matrix[0], camera_matrix[1], camera_matrix[2], camera_matrix[3]],
                                     [camera_matrix[4], camera_matrix[5], camera_matrix[6], camera_matrix[7]],
                                     [camera_matrix[8], camera_matrix[9], camera_matrix[10], camera_matrix[11]],
                                     [0, 0, 0, 1]
                                 ])
                                 
-                                # Applica la trasformazione
+                                # Converti dalla matrice ARKit (world-to-camera) alla matrice Metashape (camera-to-world)
+                                ar_transform_inv = ar_transform.inv()
+                                
+                                # Applica la conversione di coordinate
+                                transform = ar_transform_inv * arkit_to_metashape
+                                
+                                # Imposta la trasformazione della camera
                                 camera.transform = transform
+                                
+                                # Salva la posizione per il calcolo della region
+                                camera_positions.append(camera.center)
                                 
                                 # Imposta i riferimenti di posizione per l'ottimizzazione
                                 camera.reference.location = camera.center
@@ -596,6 +620,36 @@ class MetashapeTools:
             
             print(f"Imported {cameras_with_data} cameras with AR data")
             
+            # Calcola e imposta la region basata sulle posizioni delle camere
+            if camera_positions:
+                # Trova i limiti del volume che contiene le camere
+                min_x = min_y = min_z = float('inf')
+                max_x = max_y = max_z = float('-inf')
+                
+                for pos in camera_positions:
+                    min_x = min(min_x, pos.x)
+                    min_y = min(min_y, pos.y)
+                    min_z = min(min_z, pos.z)
+                    max_x = max(max_x, pos.x)
+                    max_y = max(max_y, pos.y)
+                    max_z = max(max_z, pos.z)
+                
+                # Calcola il centro e la dimensione con un margine
+                margin = 5.0  # Margine in metri
+                center_x = (min_x + max_x) / 2
+                center_y = (min_y + max_y) / 2
+                center_z = (min_z + max_z) / 2
+                
+                size_x = (max_x - min_x) + margin * 2
+                size_y = (max_y - min_y) + margin * 2
+                size_z = (max_z - min_z) + margin * 2
+                
+                # Imposta la region
+                region = chunk.region
+                region.center = ps.Vector([center_x, center_y, center_z])
+                region.size = ps.Vector([size_x, size_y, size_z])
+                region.rot = ps.Matrix([[1, 0, 0], [0, 1, 0], [0, 0, 1]])  # Identità
+            
             # Optimize the alignment if requested
             if optimize_ar:
                 if use_ar_constraints:
@@ -610,15 +664,31 @@ class MetashapeTools:
                             # Imposta l'accuratezza delle reference
                             camera.reference.accuracy = ps.Vector([0.1, 0.1, 0.1])
                     
-                # Set alignment parameters
-                parameters = ps.PhotoAlignmentParameters()
-                parameters.reset_alignment = False  # Don't reset existing alignment
-                parameters.use_cameras = True
-                parameters.accuracy = ps.HighAccuracy
-                
                 # Run photo alignment to optimize AR-based alignment
-                chunk.matchPhotos(generic_preselection=True, reference_preselection=use_ar_constraints)
-                chunk.alignCameras(parameters)
+                try:
+                    # Prima cerchiamo i punti di corrispondenza tra le immagini
+                    chunk.matchPhotos(
+                        generic_preselection=True, 
+                        reference_preselection=use_ar_constraints,
+                        keypoint_limit=40000,
+                        tiepoint_limit=4000
+                    )
+                    
+                    # Poi eseguiamo l'allineamento mantenendo le posizioni AR
+                    chunk.alignCameras(
+                        reset_alignment=False,
+                        adaptive_fitting=True,
+                        min_image=2  # Richiede almeno 2 immagini per triangolare un punto
+                    )
+                    
+                except Exception as align_error:
+                    print(f"Error during alignment: {str(align_error)}")
+                    # Prova un approccio alternativo se il primo fallisce
+                    try:
+                        print("Trying alternative alignment approach...")
+                        chunk.alignCameras()
+                    except:
+                        print("Alternative alignment also failed")
                 
                 # Filter bad alignments if requested
                 if filter_bad_ar:
