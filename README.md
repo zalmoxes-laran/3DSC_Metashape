@@ -1,44 +1,93 @@
 # 3DSC for Metashape
-3DSC tools for Metashape
 
-This collection of scripts is aimed to make it possible a pipeline between Metashape and Blender 3DSC addon (3D survey collection). Using these scripts you can:
+3DSC tools for Metashape is a collection of Python scripts designed to create an efficient workflow between Metashape and the Blender 3DSC addon (3D Survey Collection). This toolkit simplifies the process of importing, texturizing, and exporting 3D models with proper georeferencing and optimization.
 
-1 - "3DSC_MS_import_multiple_models": import a folder with a series of mesh tiles (OBJs) prepared in Blender using the 3DSC add-on.
+## Main Features
 
-1a - you need to open in metashape a project with a single chunk containing only a sparse point cloud (delete meshes and dense point clouds, if any).
-1b - prepare a folder with meshes (tiles) to be texturized and, eventually with a txt file (I suggest SHIFT.txt as a name) with shifting coordinates values. This file should contain a single line like this: "EPSG::3004 1000 1000 0" that means that Metashape will import meshes as EPSG:3004 (don't miss the double ":") shifting the coordinates of 1000 units on x and y axes (no shifting on z axis).
-1c - start the script and, when asked, select the folder that contains the meshes (OBJs) and eventually the txt file. Metashape will create several chunks for each imported mesh .
- 
-2 - "3DSC_MS_texturize": This script will texturize the chunks (imported meshes) using the Demetrescu-d'Annibale formula to texture resolution (100squared meters with 6x4096px = 1.26mm/px resolution, suitable for HI resolution VR experiences).
+With these scripts you can:
 
-3 - "3DSC_MS_rename_chunks": This script will rename the chunks using a numbered list (1,2,3 etc..). In the majority of cases you need to do it.
+1. Import 3D models (single, multiple, tiled) with or without coordinate shifts
+2. Apply intelligent texturization based on model area (with regular and 200m² limit options)
+3. Export models in various formats with coordinate systems preserved
+4. Import camera positions from iPad's 3D Scanner App, leveraging AR tracking for better initial alignment
+5. Generate Level of Detail (LOD) models for visualization optimization
 
-4 - "3DSC_MS_export_multiple_models": This script will export the textured meshes. When asked, select a folder for the export. If you provide a folder with a SHIFT.txt file, you will get a shifted model, suitable for a pipeline inside a CG software (like Blender).
+## Installation
 
---------------------------------------------------------
+1. Download the scripts to a folder on your computer
+2. In Metashape, go to Tools > Run Script and select the `3DSC_MS_GUI.py` file
+3. The 3DSC Metashape Tools menu will appear in the Metashape interface
 
-## 3DSC for Metashape - Version 1.0 Release Notes
-Release Date: 07/10/2024
+## Workflow Example
 
-We are excited to announce the release of 3DSC for Metashape version 1.0! This update introduces several new features and improvements aimed at enhancing performance and flexibility when working with large-scale 3D models.
+### Importing and Texturizing Models
 
-Key Features and Updates:
+1. **Import Models**: Use "Import Multiple Models" to import OBJ files prepared in Blender using the 3DSC addon
+   - You need to open a Metashape project with a single chunk containing only a sparse point cloud (delete meshes and dense point clouds if any)
+   - Prepare a folder with meshes (tiles) to be texturized with an optional SHIFT.txt file (e.g., "EPSG::3004 1000 1000 0")
+   - The script will create several chunks for each imported mesh
+
+2. **Texturize Models**: Apply the Demetrescu-d'Annibale formula for texture resolution
+   - Regular mode: 100m² with 6×4096px textures (1.26mm/px resolution, suitable for high-resolution VR)
+   - Extended mode: Support for models up to 200m² without compromising detail
+
+3. **Rename Chunks**: Simplify chunk management by renaming them sequentially (1, 2, 3, etc.)
+
+4. **Export Models**: Export textured meshes with coordinate shifts preserved for seamless integration with other GIS or 3D software
+
+### Working with iPad 3D Scanner App Data
+
+1. Capture your subject using the "3D Scanner App" on iPad
+2. Transfer the captured data folder to your computer
+3. Use the "Import iPad AR Camera Data" function in 3DSC Tools
+4. The script will:
+   - Import the images
+   - Read the JSON files containing camera position data from the AR tracking
+   - Apply the initial alignment from the AR data
+   - Optionally refine the alignment while maintaining the AR data as constraints
+   - Filter out poorly aligned cameras if requested
+
+## Version 2.0 Release Notes
+Release Date: April 25, 2025
+
+This major update introduces several significant improvements and new features:
+
+### New Graphical User Interface
+- Added a comprehensive menu system in Metashape for easy access to all tools
+- Organized tools into logical categories for better workflow management
+
+### iPad 3D Scanner App Integration
+- Support for importing data from the iPad 3D Scanner App
+- Utilizes AR tracking data for better initial camera alignment
+- Options to optimize alignment while respecting AR constraints
+- Intelligent filtering of poorly aligned cameras
+
 ### Extended Texture Support for Large Models
+- Added modules to support texturing of models up to 200 square meters (previously limited to 100 square meters)
+- Optimized algorithms for handling larger environments without compromising on detail
 
-Added modules to support the texturing of models up to 200 square meters (previously limited to 100 square meters). This allows for better handling of larger environments and assets without compromising on detail.
+### Mesh Validation Enhancements
+- Improved controllers that accurately identify and manage meshes with no area
+- Prevents errors that previously occurred during processing
+- Ensures a smoother workflow and improved error handling
 
-Mesh Validation Enhancements
+### Tiled Model Import and Export
+- Enhanced support for importing and exporting tiled models
+- Better handling of large datasets through tiling
+- Maintains proper coordinate systems across tiles
 
-Improved controllers that now accurately identify and manage meshes that have no area, preventing the errors that previously occurred during processing. This ensures a smoother workflow and improved error handling.
+### Additional Improvements
+- Unified interface for all import/export operations
+- Performance optimizations for handling large datasets
+- Improved error handling and user feedback
+- Minor bug fixes and UI/UX improvements
 
-### Tiled Model Import
+## Planned Future Features
+- Direct integration with GIS and BIM workflows
+- Support for additional 3D data capture devices and formats
+- Machine learning-based optimization for texture generation
+- Expanded LOD generation capabilities
 
-Introduced support for importing tiled models, expanding the range of model types that can be efficiently processed and integrated into your projects.
-
-### New Import/Export Scripts
-
-Added new scripts for importing and exporting models. These include options to import a second model or export using the Shift function, offering greater flexibility in model manipulation and positioning.
-
-### Additional Improvements:
-Performance optimizations for handling large datasets.
-Minor bug fixes and UI/UX improvements.
+## Credits and License
+Developed by Emanuel Demetrescu (emanuel.demetrescu@gmail.com)
+Licensed under CC-BY
