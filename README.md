@@ -90,4 +90,4 @@ This major update introduces several significant improvements and new features:
 
 ## Credits and License
 Developed by Emanuel Demetrescu (emanuel.demetrescu@gmail.com)
-Licensed under CC-BY
+Licensed under GNU-GPL-3

@@ -549,19 +549,21 @@ class MetashapeTools:
                                     print(f"Unexpected matrix size for {image_name}: {len(camera_matrix)} elements")
                                     continue
                                 
-                                # Converti la matrice da formato array a ps.Matrix
-                                transform = ps.Matrix([[camera_matrix[0], camera_matrix[1], camera_matrix[2], camera_matrix[3]],
-                                                    [camera_matrix[4], camera_matrix[5], camera_matrix[6], camera_matrix[7]],
-                                                    [camera_matrix[8], camera_matrix[9], camera_matrix[10], camera_matrix[11]],
-                                                    [camera_matrix[12], camera_matrix[13], camera_matrix[14], camera_matrix[15]]])
+                                # Crea la matrice di trasformazione direttamente
+                                transform = ps.Matrix([
+                                    [camera_matrix[0], camera_matrix[1], camera_matrix[2], camera_matrix[3]],
+                                    [camera_matrix[4], camera_matrix[5], camera_matrix[6], camera_matrix[7]],
+                                    [camera_matrix[8], camera_matrix[9], camera_matrix[10], camera_matrix[11]],
+                                    [0, 0, 0, 1]
+                                ])
                                 
-                                # Applica la trasformazione da sistema ARKit a Metashape
-                                # ARKit è destro, Metashape è destro ma con asse Y invertito
-                                # Nota: Questa trasformazione potrebbe richiedere regolazioni specifiche
-                                transform = transform.inv()  # Inverse per convertire da world-to-camera a camera-to-world
-                                
-                                # Imposta la trasformazione della camera
+                                # Applica la trasformazione
                                 camera.transform = transform
+                                
+                                # Imposta i riferimenti di posizione per l'ottimizzazione
+                                camera.reference.location = camera.center
+                                camera.reference.enabled = True
+                                
                                 cameras_with_data += 1
                                 
                                 # Extract intrinsics if available
@@ -600,9 +602,12 @@ class MetashapeTools:
                     # Store AR positions as constraints
                     for camera in chunk.cameras:
                         if camera.transform:
-                            camera.reference.location = camera.center
-                            camera.reference.rotation = camera.rotation
-                            camera.reference.enabled = True
+                            # Assicuriamoci che le reference siano già impostate
+                            if not camera.reference.enabled:
+                                camera.reference.location = camera.center
+                                camera.reference.enabled = True
+                            
+                            # Imposta l'accuratezza delle reference
                             camera.reference.accuracy = ps.Vector([0.1, 0.1, 0.1])
                     
                 # Set alignment parameters
