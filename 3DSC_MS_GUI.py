@@ -513,6 +513,7 @@ class MetashapeTools:
             # Create a new chunk for the imported data
             chunk = self.doc.addChunk()
             chunk.label = "iPad_Import_" + os.path.basename(image_folder)
+            self.doc.chunk = chunk  # Rende attivo il nuovo chunk
             
             # Find all images and their corresponding JSON files
             image_files = [f for f in os.listdir(image_folder) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
@@ -527,13 +528,31 @@ class MetashapeTools:
                 image_path = os.path.join(image_folder, img)
                 image_list.append(image_path)
             
+            print(f"Adding {len(image_list)} photos to the chunk...")
+            ps.app.update()
             chunk.addPhotos(image_list)
+            
+            # Initialize region with default values before processing any cameras
+            # Questo garantisce che la region sia valida anche in caso di errori successivi
+            region = chunk.region
+            region.center = ps.Vector([0, 0, 0])
+            region.size = ps.Vector([100, 100, 100])  # Dimensioni di default abbastanza grandi
+            region.rot = ps.Matrix([[1, 0, 0], [0, 1, 0], [0, 0, 1]])  # Matrice identità
             
             # Find and process the camera alignment data from JSON files
             cameras_with_data = 0
             camera_positions = []  # To track camera positions for region calculation
             
+            print("Processing camera alignment data from JSON files...")
+            ps.app.update()
+            
             for i, camera in enumerate(chunk.cameras):
+                # Aggiorna UI periodicamente
+                if i % 10 == 0:
+                    ps.app.update()
+                    print(f"Processed {i}/{len(chunk.cameras)} cameras...")
+                
+                # Prendi il nome del file senza estensione
                 image_name = os.path.splitext(os.path.basename(camera.photo.path))[0]
                 json_file = os.path.join(image_folder, image_name + ".json")
                 
@@ -546,17 +565,12 @@ class MetashapeTools:
                             if "cameraPoseARFrame" in data:
                                 camera_matrix = data["cameraPoseARFrame"]
                                 
-                                # Assicurati che la matrice abbia la dimensione corretta (4x4)
+                                # Verifica dimensioni matrice
                                 if len(camera_matrix) != 16:
                                     print(f"Unexpected matrix size for {image_name}: {len(camera_matrix)} elements")
                                     continue
                                 
-                                # Converti sistema di coordinate ARKit (Y-up) a Metashape (Z-up)
-                                # ARKit: Y-up, Z forward, X right
-                                # Metashape: Z-up, X right, Y forward (o variante - verificare in fase di test)
-                                
-                                # Crea una matrice di trasformazione per conversione di coordinate
-                                # Questa è una rotazione che adatta il sistema ARKit a Metashape
+                                # Conversione coordinate ARKit (Y-up) a Metashape (Z-up)
                                 arkit_to_metashape = ps.Matrix([
                                     [1, 0, 0, 0],
                                     [0, 0, 1, 0],
@@ -564,7 +578,7 @@ class MetashapeTools:
                                     [0, 0, 0, 1]
                                 ])
                                 
-                                # Crea la matrice di trasformazione ARKit
+                                # Matrice di trasformazione ARKit
                                 ar_transform = ps.Matrix([
                                     [camera_matrix[0], camera_matrix[1], camera_matrix[2], camera_matrix[3]],
                                     [camera_matrix[4], camera_matrix[5], camera_matrix[6], camera_matrix[7]],
@@ -572,41 +586,45 @@ class MetashapeTools:
                                     [0, 0, 0, 1]
                                 ])
                                 
-                                # Converti dalla matrice ARKit (world-to-camera) alla matrice Metashape (camera-to-world)
-                                ar_transform_inv = ar_transform.inv()
-                                
-                                # Applica la conversione di coordinate
-                                transform = ar_transform_inv * arkit_to_metashape
-                                
-                                # Imposta la trasformazione della camera
-                                camera.transform = transform
-                                
-                                # Salva la posizione per il calcolo della region
-                                camera_positions.append(camera.center)
-                                
-                                # Imposta i riferimenti di posizione per l'ottimizzazione
-                                camera.reference.location = camera.center
-                                camera.reference.enabled = True
-                                
-                                cameras_with_data += 1
+                                # Inversione e conversione
+                                try:
+                                    ar_transform_inv = ar_transform.inv()
+                                    transform = ar_transform_inv * arkit_to_metashape
+                                    
+                                    # Imposta trasformazione
+                                    camera.transform = transform
+                                    
+                                    # Verifica che transform abbia funzionato correttamente
+                                    if camera.center:
+                                        camera_positions.append(camera.center)
+                                        
+                                        # Imposta reference
+                                        camera.reference.location = camera.center
+                                        camera.reference.enabled = True
+                                        
+                                        cameras_with_data += 1
+                                    else:
+                                        print(f"Warning: Failed to get camera center for {image_name}")
+                                except Exception as matrix_error:
+                                    print(f"Matrix error for {image_name}: {str(matrix_error)}")
+                                    continue
                                 
                                 # Extract intrinsics if available
                                 if "intrinsics" in data:
                                     intrinsics = data["intrinsics"]
-                                    if len(intrinsics) >= 9:  # Assicurati che ci siano abbastanza elementi
+                                    if len(intrinsics) >= 9:
                                         fx = intrinsics[0]
                                         fy = intrinsics[4]
                                         cx = intrinsics[2]
                                         cy = intrinsics[5]
                                         
-                                        # Set camera calibration
                                         sensor = camera.sensor
                                         calib = sensor.calibration
                                         calib.f = (fx + fy) / 2
                                         calib.cx = cx - sensor.width / 2
                                         calib.cy = cy - sensor.height / 2
                                         sensor.fixed = True
-                                    
+                        
                         except json.JSONDecodeError:
                             print(f"Error reading JSON file: {json_file}")
                             continue
@@ -619,54 +637,86 @@ class MetashapeTools:
                 return
             
             print(f"Imported {cameras_with_data} cameras with AR data")
+            ps.app.update()
             
-            # Calcola e imposta la region basata sulle posizioni delle camere
+            # Ricalcola la region basata sulle posizioni delle camere
             if camera_positions:
-                # Trova i limiti del volume che contiene le camere
-                min_x = min_y = min_z = float('inf')
-                max_x = max_y = max_z = float('-inf')
+                print("Calculating region from camera positions...")
+                ps.app.update()
                 
-                for pos in camera_positions:
-                    min_x = min(min_x, pos.x)
-                    min_y = min(min_y, pos.y)
-                    min_z = min(min_z, pos.z)
-                    max_x = max(max_x, pos.x)
-                    max_y = max(max_y, pos.y)
-                    max_z = max(max_z, pos.z)
-                
-                # Calcola il centro e la dimensione con un margine
-                margin = 5.0  # Margine in metri
-                center_x = (min_x + max_x) / 2
-                center_y = (min_y + max_y) / 2
-                center_z = (min_z + max_z) / 2
-                
-                size_x = (max_x - min_x) + margin * 2
-                size_y = (max_y - min_y) + margin * 2
-                size_z = (max_z - min_z) + margin * 2
-                
-                # Imposta la region
-                region = chunk.region
-                region.center = ps.Vector([center_x, center_y, center_z])
-                region.size = ps.Vector([size_x, size_y, size_z])
-                region.rot = ps.Matrix([[1, 0, 0], [0, 1, 0], [0, 0, 1]])  # Identità
+                try:
+                    # Trova limiti del volume
+                    min_x = min(pos.x for pos in camera_positions)
+                    min_y = min(pos.y for pos in camera_positions)
+                    min_z = min(pos.z for pos in camera_positions)
+                    max_x = max(pos.x for pos in camera_positions)
+                    max_y = max(pos.y for pos in camera_positions)
+                    max_z = max(pos.z for pos in camera_positions)
+                    
+                    # Calcola centro e dimensione con margine
+                    margin = 5.0  # Margine in metri
+                    center_x = (min_x + max_x) / 2
+                    center_y = (min_y + max_y) / 2
+                    center_z = (min_z + max_z) / 2
+                    
+                    size_x = max(10.0, (max_x - min_x) + margin * 2)  # Minimo 10 metri
+                    size_y = max(10.0, (max_y - min_y) + margin * 2)
+                    size_z = max(10.0, (max_z - min_z) + margin * 2)
+                    
+                    # Imposta la region
+                    region = chunk.region
+                    region.center = ps.Vector([center_x, center_y, center_z])
+                    region.size = ps.Vector([size_x, size_y, size_z])
+                    
+                    # Assicurati che la matrice di rotazione sia valida
+                    region.rot = ps.Matrix([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+                    
+                    print(f"Set region center to {center_x}, {center_y}, {center_z}")
+                    print(f"Set region size to {size_x}, {size_y}, {size_z}")
+                except Exception as region_error:
+                    print(f"Error setting region: {str(region_error)}")
+                    # Non interrompere il processo se non si riesce a impostare la region
+            
+            # AGGIUNGI QUI: Chiedi all'utente dove salvare il progetto
+            save_path = ps.app.getSaveFileName("Specify where to save the project:")
+            if save_path:
+                self.doc.save(save_path)
+                print(f"Project saved to {save_path}")
+            else:
+                # Fallback to default save if user cancels
+                try:
+                    self.doc.save()
+                    print("Project saved with default name")
+                except Exception as save_error:
+                    print(f"Error saving project: {str(save_error)}")
+                    ps.app.messageBox("Warning: Could not save the project automatically. Please save manually.")
+            
+            # Aggiorna il documento prima di procedere con l'allineamento
+            ps.app.update()
             
             # Optimize the alignment if requested
             if optimize_ar:
+                print("Optimizing AR alignment...")
+                ps.app.update()
+                
                 if use_ar_constraints:
-                    # Store AR positions as constraints
+                    # Prepare AR constraints
                     for camera in chunk.cameras:
                         if camera.transform:
-                            # Assicuriamoci che le reference siano già impostate
                             if not camera.reference.enabled:
                                 camera.reference.location = camera.center
                                 camera.reference.enabled = True
                             
-                            # Imposta l'accuratezza delle reference
+                            # Accuracy for constraints
                             camera.reference.accuracy = ps.Vector([0.1, 0.1, 0.1])
                     
-                # Run photo alignment to optimize AR-based alignment
+                    ps.app.update()
+                
+                # Match photos
                 try:
-                    # Prima cerchiamo i punti di corrispondenza tra le immagini
+                    print("Matching photos...")
+                    ps.app.update()
+                    
                     chunk.matchPhotos(
                         generic_preselection=True, 
                         reference_preselection=use_ar_constraints,
@@ -674,31 +724,69 @@ class MetashapeTools:
                         tiepoint_limit=4000
                     )
                     
-                    # Poi eseguiamo l'allineamento mantenendo le posizioni AR
+                    # Salva dopo il matching
+                    ps.app.update()
+                    if save_path:
+                        self.doc.save(save_path)
+                    else:
+                        try:
+                            self.doc.save()
+                        except:
+                            pass
+                    
+                    print("Aligning cameras...")
+                    ps.app.update()
+                    
+                    # Align cameras
                     chunk.alignCameras(
                         reset_alignment=False,
                         adaptive_fitting=True,
-                        min_image=2  # Richiede almeno 2 immagini per triangolare un punto
+                        min_image=2
                     )
+                    
+                    # Salva dopo l'allineamento
+                    ps.app.update()
+                    if save_path:
+                        self.doc.save(save_path)
+                    else:
+                        try:
+                            self.doc.save()
+                        except:
+                            pass
                     
                 except Exception as align_error:
                     print(f"Error during alignment: {str(align_error)}")
-                    # Prova un approccio alternativo se il primo fallisce
+                    ps.app.update()
+                    
+                    # Alternative approach
                     try:
                         print("Trying alternative alignment approach...")
+                        ps.app.update()
                         chunk.alignCameras()
-                    except:
-                        print("Alternative alignment also failed")
+                        ps.app.update()
+                        if save_path:
+                            self.doc.save(save_path)
+                        else:
+                            try:
+                                self.doc.save()
+                            except:
+                                pass
+                    except Exception as alt_error:
+                        print(f"Alternative alignment also failed: {str(alt_error)}")
+                        ps.app.update()
                 
                 # Filter bad alignments if requested
                 if filter_bad_ar:
+                    print("Filtering bad alignments...")
+                    ps.app.update()
+                    
+                    disabled_count = 0
                     for camera in chunk.cameras:
                         if camera.transform is None:
                             continue
                             
-                        # Check if alignment is significantly different from AR data
                         if camera.reference.location:
-                            # Calculate distance between estimated and reference positions
+                            # Calculate distance between estimated and reference
                             dist_x = abs(camera.center.x - camera.reference.location.x)
                             dist_y = abs(camera.center.y - camera.reference.location.y)
                             dist_z = abs(camera.center.z - camera.reference.location.z)
@@ -706,13 +794,52 @@ class MetashapeTools:
                             
                             if distance > 0.5:  # Threshold in meters
                                 camera.enabled = False
-                                print(f"Disabled camera {camera.label} due to large alignment difference")
+                                disabled_count += 1
+                    
+                    print(f"Disabled {disabled_count} cameras due to large alignment differences")
+                    ps.app.update()
+                    
+                    # Salva dopo il filtraggio
+                    if save_path:
+                        self.doc.save(save_path)
+                    else:
+                        try:
+                            self.doc.save()
+                        except:
+                            pass
             
+            # Final updates
+            chunk.resetRegion()  # Reset region to ensure it's correctly set
             ps.app.update()
+            
+            # Salvataggio finale
+            if save_path:
+                self.doc.save(save_path)
+            else:
+                try:
+                    self.doc.save()
+                except:
+                    pass
+            
+            # Breve pausa prima del messaggio finale
+            import time
+            time.sleep(0.5)
+            
             ps.app.messageBox(f"Imported {len(image_files)} images with {cameras_with_data} AR camera positions.")
             
         except Exception as e:
+            ps.app.update()
+            print(f"Critical error: {str(e)}")
             ps.app.messageBox(f"An error occurred: {str(e)}")
+            
+            try:
+                # Prova a salvare in caso di errore
+                if 'save_path' in locals() and save_path:
+                    self.doc.save(save_path)
+                else:
+                    self.doc.save()
+            except:
+                pass
 
 # Create the tool
 tool = MetashapeTools()
