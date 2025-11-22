@@ -37,11 +37,12 @@ class MetashapeTools:
         ps.app.addMenuItem(label + "/Utility/Rename Chunks", self.rename_chunks)
         ps.app.addMenuItem(label + "/Utility/LOD Generator", self.lod_generator)
         
-        ps.app.addMenuItem(label + "/iPad/Import iPad AR Camera Data", self.import_ipad_cameras)
+        # EXPERIMENTAL - iPad AR Camera Import
+        # ps.app.addMenuItem(label + "/iPad/Import iPad AR Camera Data (EXPERIMENTAL)", self.import_ipad_cameras)
 
     def show_menu(self):
         # Visualizza un messaggio quando si clicca sul menu principale
-        ps.app.messageBox("3DSC Metashape Tools", "Select a specific tool from the submenu.") 
+        ps.app.messageBox("3DSC Metashape Tools - Select a specific tool from the submenu.")
 
     # Implementation of existing scripts
     def import_multiple_models(self):
@@ -57,19 +58,30 @@ class MetashapeTools:
             coord_shift = False
             
             # Look for shift file
+            projection_coor = None
             for ob_txt in file_list:
                 if ob_txt.endswith(".txt"):
                     file_txt_fullpath = str(path_folder + ob_txt)
                     print(file_txt_fullpath)
                     with open(file_txt_fullpath, 'r', encoding='utf-8') as f:
                         first = f.readline()
-                        projection_coor = str(first.split(' ')[0])
-                        shift_coor_x = int(first.split(' ')[1])
-                        shift_coor_y = int(first.split(' ')[2])
-                        shift_coor_z = int(first.split(' ')[3])
+                        parts = first.split()
+                        crs_string = parts[0]
+                        shift_coor_x = float(parts[1])
+                        shift_coor_y = float(parts[2])
+                        shift_coor_z = float(parts[3])
                         shift_coor = ps.Vector([shift_coor_x, shift_coor_y, shift_coor_z])
                         coord_shift = True
+                        
+                        # Handle CRS: only set if not LOCAL or NONE
+                        if crs_string.upper() not in ['LOCAL', 'LOCAL_CS', 'NONE']:
+                            projection_coor = crs_string
+                        
                         print(f"Using shift coordinates: {shift_coor_x}, {shift_coor_y}, {shift_coor_z}")
+                        if projection_coor:
+                            print(f"Using CRS: {projection_coor}")
+                        else:
+                            print("Using local coordinates (no CRS)")
             
             # Import each model
             obj_list = []
@@ -107,18 +119,23 @@ class MetashapeTools:
                     
                     # Import with or without shift
                     if coord_shift:
-                        self.doc.chunk.importModel(path=ob_fullpath, format=format_file_import, 
-                                                 crs=ps.CoordinateSystem(projection_coor), shift=shift_coor)
+                        if projection_coor:
+                            # Import with CRS and shift
+                            self.doc.chunk.importModel(path=ob_fullpath, format=format_file_import, 
+                                                     crs=ps.CoordinateSystem(projection_coor), shift=shift_coor)
+                        else:
+                            # Import with shift only (local coordinates)
+                            self.doc.chunk.importModel(path=ob_fullpath, format=format_file_import, shift=shift_coor)
                     else:
                         self.doc.chunk.importModel(path=ob_fullpath, format=format_file_import)
                         
                     chunk_number += 1
             
             ps.app.update()
-            ps.app.messageBox("Import complete", "Models imported successfully!")
+            ps.app.messageBox("Import complete - Models imported successfully!")
             
         except Exception as e:
-            ps.app.messageBox("Error", f"An error occurred: {str(e)}")
+            ps.app.messageBox(f"Error: An error occurred: {str(e)}")
     
     def import_single_model_with_shift(self):
         try:
@@ -135,8 +152,12 @@ class MetashapeTools:
                 with open(shift_path, 'r', encoding='utf-8') as file:
                     first_line = file.readline()
                     parts = first_line.split()
-                    projection_coor = parts[0]
+                    crs_string = parts[0]
                     shift_coor = ps.Vector([float(parts[1]), float(parts[2]), float(parts[3])])
+                    
+                    # Handle CRS: only set if not LOCAL or NONE
+                    if crs_string.upper() not in ['LOCAL', 'LOCAL_CS', 'NONE']:
+                        projection_coor = crs_string
             
             # Check for active chunk or create new one
             if self.doc.chunk is None:
@@ -148,14 +169,17 @@ class MetashapeTools:
             
             # Import the model
             if shift_coor:
-                chunk.importModel(path=model_path, shift=shift_coor, crs=ps.CoordinateSystem(projection_coor))
+                if projection_coor:
+                    chunk.importModel(path=model_path, shift=shift_coor, crs=ps.CoordinateSystem(projection_coor))
+                else:
+                    chunk.importModel(path=model_path, shift=shift_coor)
             else:
                 chunk.importModel(path=model_path)
                 
-            ps.app.messageBox("Success", "Model imported successfully into the active chunk.")
+            ps.app.messageBox("Success - Model imported successfully into the active chunk.")
             
         except Exception as e:
-            ps.app.messageBox("Error", f"An error occurred: {str(e)}")
+            ps.app.messageBox(f"Error: An error occurred: {str(e)}")
     
     def import_tiled_models(self):
         try:
@@ -172,11 +196,17 @@ class MetashapeTools:
             # Read shift values
             with open(shift_file, 'r', encoding='utf-8') as f:
                 first_line = f.readline()
-                projection_coor = str(first_line.split(' ')[0])
-                shift_coor_x = float(first_line.split(' ')[1])
-                shift_coor_y = float(first_line.split(' ')[2])
-                shift_coor_z = float(first_line.split(' ')[3])
+                parts = first_line.split()
+                crs_string = parts[0]
+                shift_coor_x = float(parts[1])
+                shift_coor_y = float(parts[2])
+                shift_coor_z = float(parts[3])
                 shift = ps.Vector([shift_coor_x, shift_coor_y, shift_coor_z])
+                
+                # Handle CRS: only set if not LOCAL or NONE
+                projection_coor = None
+                if crs_string.upper() not in ['LOCAL', 'LOCAL_CS', 'NONE']:
+                    projection_coor = crs_string
             
             # Create a new chunk for the reimported model
             new_chunk = self.doc.addChunk()
@@ -200,10 +230,10 @@ class MetashapeTools:
             # Build tiled model
             new_chunk.buildTiledModel()
             
-            ps.app.messageBox("Success", "Tiles reimported and tiled model regenerated successfully.")
+            ps.app.messageBox("Success - Tiles reimported and tiled model regenerated successfully.")
             
         except Exception as e:
-            ps.app.messageBox("Error", f"An error occurred: {str(e)}")
+            ps.app.messageBox(f"Error: An error occurred: {str(e)}")
 
     def texturize_models(self):
         try:
@@ -238,10 +268,10 @@ class MetashapeTools:
                                   fill_holes=True, ghosting_filter=True)
             
             ps.app.update()
-            ps.app.messageBox("Success", "Texturization completed for all chunks.")
+            ps.app.messageBox("Success - Texturization completed for all chunks.")
             
         except Exception as e:
-            ps.app.messageBox("Error", f"An error occurred: {str(e)}")
+            ps.app.messageBox(f"Error: An error occurred: {str(e)}")
     
     def texturize_models_200(self):
         try:
@@ -290,10 +320,10 @@ class MetashapeTools:
                 print(f"Progress: {progress:.2f}% completed ({chunks_processed}/{total_chunks} chunks processed)")
             
             ps.app.update()
-            ps.app.messageBox("Success", "Texturization completed for all chunks with 200m² limit.")
+            ps.app.messageBox("Success - Texturization completed for all chunks with 200m² limit.")
             
         except Exception as e:
-            ps.app.messageBox("Error", f"An error occurred: {str(e)}")
+            ps.app.messageBox(f"Error: An error occurred: {str(e)}")
     
     def export_multiple_models(self):
         try:
@@ -306,6 +336,7 @@ class MetashapeTools:
             # Check for shift file
             file_list = os.listdir(path_folder)
             coord_shift = False
+            projection_coor = None
             
             for ob_txt in file_list:
                 if ob_txt.endswith(".txt"):
@@ -314,13 +345,23 @@ class MetashapeTools:
                     
                     with open(file_txt_fullpath, 'r', encoding='utf-8') as f:
                         first = f.readline()
-                        projection_coor = str(first.split(' ')[0])
-                        shift_coor_x = int(first.split(' ')[1])
-                        shift_coor_y = int(first.split(' ')[2])
-                        shift_coor_z = int(first.split(' ')[3])
+                        parts = first.split()
+                        crs_string = parts[0]
+                        shift_coor_x = float(parts[1])
+                        shift_coor_y = float(parts[2])
+                        shift_coor_z = float(parts[3])
                         shift_coor = ps.Vector([shift_coor_x, shift_coor_y, shift_coor_z])
                         coord_shift = True
+                        
+                        # Handle CRS: only set if not LOCAL or NONE
+                        if crs_string.upper() not in ['LOCAL', 'LOCAL_CS', 'NONE']:
+                            projection_coor = crs_string
+                        
                         print(shift_coor_x)
+                        if projection_coor:
+                            print(f"Using CRS: {projection_coor}")
+                        else:
+                            print("Using local coordinates (no CRS)")
             
             # Export each chunk
             number = 0
@@ -331,26 +372,49 @@ class MetashapeTools:
                     ob_fullpath = str(path_folder + chunk.label + "_mt.obj")
                     
                     if coord_shift:
-                        self.doc.chunks[i].exportModel(
-                            path=ob_fullpath, 
-                            binary=True, 
-                            precision=6, 
-                            texture_format=ps.ImageFormat.ImageFormatJPEG, 
-                            save_texture=True, 
-                            save_uv=True, 
-                            save_normals=True, 
-                            save_colors=True, 
-                            save_cameras=False, 
-                            save_markers=False, 
-                            save_udim=False, 
-                            save_alpha=False, 
-                            strip_extensions=False, 
-                            raster_transform=ps.RasterTransformNone, 
-                            colors_rgb_8bit=True, 
-                            format=ps.ModelFormat.ModelFormatOBJ,
-                            crs=ps.CoordinateSystem(projection_coor), 
-                            shift=shift_coor
-                        )
+                        if projection_coor:
+                            # Export with CRS and shift
+                            self.doc.chunks[i].exportModel(
+                                path=ob_fullpath, 
+                                binary=True, 
+                                precision=6, 
+                                texture_format=ps.ImageFormat.ImageFormatJPEG, 
+                                save_texture=True, 
+                                save_uv=True, 
+                                save_normals=True, 
+                                save_colors=True, 
+                                save_cameras=False, 
+                                save_markers=False, 
+                                save_udim=False, 
+                                save_alpha=False, 
+                                strip_extensions=False, 
+                                raster_transform=ps.RasterTransformNone, 
+                                colors_rgb_8bit=True, 
+                                format=ps.ModelFormat.ModelFormatOBJ,
+                                crs=ps.CoordinateSystem(projection_coor), 
+                                shift=shift_coor
+                            )
+                        else:
+                            # Export with shift only (local coordinates)
+                            self.doc.chunks[i].exportModel(
+                                path=ob_fullpath, 
+                                binary=True, 
+                                precision=6, 
+                                texture_format=ps.ImageFormat.ImageFormatJPEG, 
+                                save_texture=True, 
+                                save_uv=True, 
+                                save_normals=True, 
+                                save_colors=True, 
+                                save_cameras=False, 
+                                save_markers=False, 
+                                save_udim=False, 
+                                save_alpha=False, 
+                                strip_extensions=False, 
+                                raster_transform=ps.RasterTransformNone, 
+                                colors_rgb_8bit=True, 
+                                format=ps.ModelFormat.ModelFormatOBJ,
+                                shift=shift_coor
+                            )
                     else:
                         self.doc.chunks[i].exportModel(
                             path=ob_fullpath, 
@@ -374,16 +438,16 @@ class MetashapeTools:
                 number += 1
             
             ps.app.update()
-            ps.app.messageBox("Success", f"Exported {number} models successfully.")
+            ps.app.messageBox(f"Success - Exported {number} models successfully.")
             
         except Exception as e:
-            ps.app.messageBox("Error", f"An error occurred: {str(e)}")
+            ps.app.messageBox(f"Error: An error occurred: {str(e)}")
     
     def export_single_model_with_shift(self):
         try:
             # Check if there's an active chunk
             if self.doc.chunk is None:
-                ps.app.messageBox("Error", "No active chunk found.")
+                ps.app.messageBox("Error - No active chunk found.")
                 return
             
             chunk = self.doc.chunk
@@ -396,12 +460,15 @@ class MetashapeTools:
                 with open(shift_path, 'r', encoding='utf-8') as file:
                     first_line = file.readline()
                     parts = first_line.split()
-                    projection_coor = parts[0]
+                    crs_string = parts[0]
                     shift_coor_x = float(parts[1])
                     shift_coor_y = float(parts[2])
                     shift_coor_z = float(parts[3])
-                    crs = ps.CoordinateSystem(projection_coor)
                     shift_coor = ps.Vector([shift_coor_x, shift_coor_y, shift_coor_z])
+                    
+                    # Handle CRS: only set if not LOCAL or NONE
+                    if crs_string.upper() not in ['LOCAL', 'LOCAL_CS', 'NONE']:
+                        crs = ps.CoordinateSystem(crs_string)
             
             # Ask for destination folder and filename
             save_folder = ps.app.getExistingDirectory("Specify the folder to save the OBJ file:")
@@ -415,12 +482,17 @@ class MetashapeTools:
             save_path = os.path.join(save_folder, file_name + ".obj")
             
             # Export the model
-            chunk.exportModel(path=save_path, format=ps.ModelFormat.ModelFormatOBJ, crs=crs, shift=shift_coor)
+            if crs and shift_coor:
+                chunk.exportModel(path=save_path, format=ps.ModelFormat.ModelFormatOBJ, crs=crs, shift=shift_coor)
+            elif shift_coor:
+                chunk.exportModel(path=save_path, format=ps.ModelFormat.ModelFormatOBJ, shift=shift_coor)
+            else:
+                chunk.exportModel(path=save_path, format=ps.ModelFormat.ModelFormatOBJ)
             
-            ps.app.messageBox("Success", f"Model exported successfully to {save_path}.")
+            ps.app.messageBox(f"Success - Model exported successfully to {save_path}.")
             
         except Exception as e:
-            ps.app.messageBox("Error", f"An error occurred: {str(e)}")
+            ps.app.messageBox(f"Error: An error occurred: {str(e)}")
     
     def export_tiled_models(self):
         try:
@@ -438,11 +510,17 @@ class MetashapeTools:
             # Read shift values
             with open(shift_file, 'r', encoding='utf-8') as f:
                 first_line = f.readline()
-                projection_coor = str(first_line.split(' ')[0])
-                shift_coor_x = float(first_line.split(' ')[1])
-                shift_coor_y = float(first_line.split(' ')[2])
-                shift_coor_z = float(first_line.split(' ')[3])
+                parts = first_line.split()
+                crs_string = parts[0]
+                shift_coor_x = float(parts[1])
+                shift_coor_y = float(parts[2])
+                shift_coor_z = float(parts[3])
                 shift = ps.Vector([shift_coor_x, shift_coor_y, shift_coor_z])
+                
+                # Handle CRS: only set if not LOCAL or NONE
+                projection_coor = None
+                if crs_string.upper() not in ['LOCAL', 'LOCAL_CS', 'NONE']:
+                    projection_coor = crs_string
             
             # Get active chunk
             chunk = self.doc.chunk
@@ -454,7 +532,7 @@ class MetashapeTools:
             # Check for tiled model
             tiled_model = chunk.tiled_model
             if not tiled_model:
-                ps.app.messageBox("Error", "No tiled model found in the active chunk.")
+                ps.app.messageBox("Error - No tiled model found in the active chunk.")
                 return
             
             # Create export folder if it doesn't exist
@@ -473,10 +551,10 @@ class MetashapeTools:
                 # Export the texture
                 tiled_model.exportTileTexture(tile_index, png_path, texture_format)
             
-            ps.app.messageBox("Success", f"Exported {len(tiled_model.tiles)} tiled models successfully.")
+            ps.app.messageBox(f"Success - Exported {len(tiled_model.tiles)} tiled models successfully.")
             
         except Exception as e:
-            ps.app.messageBox("Error", f"An error occurred: {str(e)}")
+            ps.app.messageBox(f"Error: An error occurred: {str(e)}")
     
     def rename_chunks(self):
         try:
@@ -486,15 +564,20 @@ class MetashapeTools:
                 chunk.label = str(number) + "_mt"
                 number += 1
             
-            ps.app.messageBox("Success", f"Renamed {number-1} chunks successfully.")
+            ps.app.messageBox(f"Success - Renamed {number-1} chunks successfully.")
             
         except Exception as e:
-            ps.app.messageBox("Error", f"An error occurred: {str(e)}")
+            ps.app.messageBox(f"Error: An error occurred: {str(e)}")
     
     def lod_generator(self):
-        ps.app.messageBox("Notice", "LOD Generator is not fully implemented in the GUI yet.")
+        ps.app.messageBox("Notice - LOD Generator is not fully implemented in the GUI yet.")
     
     def import_ipad_cameras(self):
+        """
+        EXPERIMENTAL FEATURE
+        Import camera positions from iPad's 3D Scanner App using AR tracking data.
+        This feature is still under development and may not work reliably in all cases.
+        """
         try:
             # Get the folder containing the iPad captures
             image_folder = ps.app.getExistingDirectory("Select the folder with iPad captured images:")
@@ -519,7 +602,7 @@ class MetashapeTools:
             image_files = [f for f in os.listdir(image_folder) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
             
             if not image_files:
-                ps.app.messageBox("No image files found in the selected folder.")
+                ps.app.messageBox("Error - No image files found in the selected folder.")
                 return
             
             # Load the images into the chunk
@@ -633,63 +716,57 @@ class MetashapeTools:
                             continue
             
             if cameras_with_data == 0:
-                ps.app.messageBox("No AR camera data found in the JSON files.")
+                ps.app.messageBox("Warning - No AR camera data found in the JSON files.")
                 return
             
-            print(f"Imported {cameras_with_data} cameras with AR data")
-            ps.app.update()
-            
-            # Ricalcola la region basata sulle posizioni delle camere
+            # Calculate and set proper region based on camera positions
             if camera_positions:
-                print("Calculating region from camera positions...")
+                print(f"Calculating region based on {len(camera_positions)} camera positions...")
                 ps.app.update()
                 
-                try:
-                    # Trova limiti del volume
-                    min_x = min(pos.x for pos in camera_positions)
-                    min_y = min(pos.y for pos in camera_positions)
-                    min_z = min(pos.z for pos in camera_positions)
-                    max_x = max(pos.x for pos in camera_positions)
-                    max_y = max(pos.y for pos in camera_positions)
-                    max_z = max(pos.z for pos in camera_positions)
-                    
-                    # Calcola centro e dimensione con margine
-                    margin = 5.0  # Margine in metri
-                    center_x = (min_x + max_x) / 2
-                    center_y = (min_y + max_y) / 2
-                    center_z = (min_z + max_z) / 2
-                    
-                    size_x = max(10.0, (max_x - min_x) + margin * 2)  # Minimo 10 metri
-                    size_y = max(10.0, (max_y - min_y) + margin * 2)
-                    size_z = max(10.0, (max_z - min_z) + margin * 2)
-                    
-                    # Imposta la region
-                    region = chunk.region
-                    region.center = ps.Vector([center_x, center_y, center_z])
-                    region.size = ps.Vector([size_x, size_y, size_z])
-                    
-                    # Assicurati che la matrice di rotazione sia valida
-                    region.rot = ps.Matrix([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
-                    
-                    print(f"Set region center to {center_x}, {center_y}, {center_z}")
-                    print(f"Set region size to {size_x}, {size_y}, {size_z}")
-                except Exception as region_error:
-                    print(f"Error setting region: {str(region_error)}")
-                    # Non interrompere il processo se non si riesce a impostare la region
+                # Trova i bounds delle posizioni delle camere
+                min_x = min_y = min_z = float('inf')
+                max_x = max_y = max_z = float('-inf')
+                
+                for pos in camera_positions:
+                    min_x = min(min_x, pos.x)
+                    max_x = max(max_x, pos.x)
+                    min_y = min(min_y, pos.y)
+                    max_y = max(max_y, pos.y)
+                    min_z = min(min_z, pos.z)
+                    max_z = max(max_z, pos.z)
+                
+                # Calcola centro e dimensioni
+                center_x = (min_x + max_x) / 2
+                center_y = (min_y + max_y) / 2
+                center_z = (min_z + max_z) / 2
+                
+                size_x = max(abs(max_x - min_x), 1)
+                size_y = max(abs(max_y - min_y), 1)
+                size_z = max(abs(max_z - min_z), 1)
+                
+                # Aggiungi margine del 50%
+                size_x *= 1.5
+                size_y *= 1.5
+                size_z *= 1.5
+                
+                region.center = ps.Vector([center_x, center_y, center_z])
+                region.size = ps.Vector([size_x, size_y, size_z])
+                chunk.region = region
+                
+                print(f"Region set: center={center_x:.2f},{center_y:.2f},{center_z:.2f}, size={size_x:.2f},{size_y:.2f},{size_z:.2f}")
             
-            # AGGIUNGI QUI: Chiedi all'utente dove salvare il progetto
-            save_path = ps.app.getSaveFileName("Specify where to save the project:")
-            if save_path:
-                self.doc.save(save_path)
-                print(f"Project saved to {save_path}")
-            else:
-                # Fallback to default save if user cancels
-                try:
-                    self.doc.save()
-                    print("Project saved with default name")
-                except Exception as save_error:
-                    print(f"Error saving project: {str(save_error)}")
-                    ps.app.messageBox("Warning: Could not save the project automatically. Please save manually.")
+            # Attempt to save the project
+            save_path = None
+            try:
+                if self.doc.path:
+                    save_path = self.doc.path
+                    self.doc.save(save_path)
+                    print(f"Project saved to {save_path}")
+                else:
+                    print("Warning: Document has no path. Please save manually.")
+            except Exception as save_error:
+                print(f"Error saving document: {str(save_error)}. Please save manually.")
             
             # Aggiorna il documento prima di procedere con l'allineamento
             ps.app.update()
@@ -825,12 +902,12 @@ class MetashapeTools:
             import time
             time.sleep(0.5)
             
-            ps.app.messageBox(f"Imported {len(image_files)} images with {cameras_with_data} AR camera positions.")
+            ps.app.messageBox(f"Success - Imported {len(image_files)} images with {cameras_with_data} AR camera positions.")
             
         except Exception as e:
             ps.app.update()
             print(f"Critical error: {str(e)}")
-            ps.app.messageBox(f"An error occurred: {str(e)}")
+            ps.app.messageBox(f"Error: An error occurred: {str(e)}")
             
             try:
                 # Prova a salvare in caso di errore
