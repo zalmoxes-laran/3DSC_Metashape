@@ -33,6 +33,7 @@ class MetashapeTools:
         ps.app.addMenuItem(label + "/Export/Export Multiple Models", self.export_multiple_models)
         ps.app.addMenuItem(label + "/Export/Export Single Model with Shift", self.export_single_model_with_shift)
         ps.app.addMenuItem(label + "/Export/Export Tiled Models", self.export_tiled_models)
+        ps.app.addMenuItem(label + "/Export/Export Undistorted Images (Active Chunk)", self.export_undistorted_images_active_chunk)
         
         ps.app.addMenuItem(label + "/Utility/Rename Chunks", self.rename_chunks)
         ps.app.addMenuItem(label + "/Utility/LOD Generator", self.lod_generator)
@@ -556,6 +557,44 @@ class MetashapeTools:
         except Exception as e:
             ps.app.messageBox(f"Error: An error occurred: {str(e)}")
     
+    def export_undistorted_images_active_chunk(self):
+        try:
+            if self.doc.chunk is None:
+                ps.app.messageBox("Error - No active chunk found.")
+                return
+
+            chunk = self.doc.chunk
+            if not chunk.cameras:
+                ps.app.messageBox("Error - Active chunk has no cameras.")
+                return
+
+            export_root = ps.app.getExistingDirectory("Select destination folder for undistorted images:")
+            if not export_root:
+                return
+
+            chunk_label = chunk.label if chunk.label else "active_chunk"
+            safe_label = "".join(c if c.isalnum() or c in ('_', '-', '.') else '_' for c in chunk_label)
+            export_folder = os.path.join(export_root, safe_label + "_undistorted")
+            os.makedirs(export_folder, exist_ok=True)
+
+            output_pattern = os.path.join(export_folder, "{filename}.{fileext}")
+            chunk.convertImages(
+                path=output_pattern,
+                use_initial_calibration=True,
+                color_correction=False,
+                merge_planes=False,
+                update_gps_tags=False,
+            )
+
+            exported = len([cam for cam in chunk.cameras if cam.photo is not None])
+            ps.app.update()
+            ps.app.messageBox(
+                f"Success - Exported {exported} undistorted images to {export_folder}."
+            )
+
+        except Exception as e:
+            ps.app.messageBox(f"Error: An error occurred: {str(e)}")
+
     def rename_chunks(self):
         try:
             number = 1
