@@ -9,6 +9,19 @@ from tkinter import ttk, messagebox, filedialog
 class MetashapeTools:
     def __init__(self):
         self.doc = ps.app.document
+        self.global_shift_file = None
+        self.global_shift_line = None
+        self.global_shift_vector = None
+        self.global_shift_crs_string = None
+        self.global_shift_crs = None
+        self.workflow_state = {
+            "lod0_chunk_key": None,
+            "cut_blocks": [],
+            "cut_mode": None,
+            "cut_folder": None,
+            "cut_source_chunk_key": None,
+            "generated_chunk_keys": [],
+        }
         self.init_gui()
     
 
@@ -23,6 +36,11 @@ class MetashapeTools:
             pass  # Ignora errori se il menu non esiste
 
         # Aggiungi i sottomenu per ogni gruppo di funzioni
+        shift_preview = self.get_global_shift_preview(compact=True)
+        ps.app.addMenuItem(label + "/Shift/Load Global Shift File", self.load_global_shift_file)
+        ps.app.addMenuItem(label + "/Shift/Current Shift -> " + shift_preview, self.show_global_shift_preview)
+        ps.app.addMenuItem(label + "/Shift/Clear Global Shift", self.clear_global_shift)
+
         ps.app.addMenuItem(label + "/Import/Import Multiple Models", self.import_multiple_models)
         ps.app.addMenuItem(label + "/Import/Import Single Model with Shift", self.import_single_model_with_shift)
         ps.app.addMenuItem(label + "/Import/Import Tiled Models", self.import_tiled_models)
@@ -33,8 +51,16 @@ class MetashapeTools:
         ps.app.addMenuItem(label + "/Export/Export Multiple Models", self.export_multiple_models)
         ps.app.addMenuItem(label + "/Export/Export Single Model with Shift", self.export_single_model_with_shift)
         ps.app.addMenuItem(label + "/Export/Export Tiled Models", self.export_tiled_models)
+        ps.app.addMenuItem(label + "/Export/Cut Giant Mesh into Blocks (with Shift)", self.cut_giant_mesh_into_blocks_with_shift)
+        ps.app.addMenuItem(label + "/Export/Workflow Export Blocks (Textured First)", self.export_workflow_blocks_textured)
         ps.app.addMenuItem(label + "/Export/Export Undistorted Images (Active Chunk)", self.export_undistorted_images_active_chunk)
-        
+
+        ps.app.addMenuItem(label + "/Workflow/STEP2 Prepare or Flag LOD0", self.prepare_or_flag_lod0)
+        ps.app.addMenuItem(label + "/Workflow/STEP3 Cut Mesh into Blocks (Options)", self.cut_giant_mesh_into_blocks_with_shift)
+        ps.app.addMenuItem(label + "/Workflow/STEP5 Texturize Workflow Blocks", self.texturize_workflow_blocks)
+        ps.app.addMenuItem(label + "/Workflow/STEP6 Generate LODs + Normal Maps (Experimental)", self.generate_workflow_lods_experimental)
+        ps.app.addMenuItem(label + "/Workflow/STEP7 Export Workflow Blocks", self.export_workflow_blocks_textured)
+
         ps.app.addMenuItem(label + "/Utility/Rename Chunks", self.rename_chunks)
         ps.app.addMenuItem(label + "/Utility/LOD Generator", self.lod_generator)
         
@@ -44,6 +70,426 @@ class MetashapeTools:
     def show_menu(self):
         # Visualizza un messaggio quando si clicca sul menu principale
         ps.app.messageBox("3DSC Metashape Tools - Select a specific tool from the submenu.")
+
+    def _chunk_key(self, chunk):
+        return getattr(chunk, "key", id(chunk))
+
+    def _get_chunk_by_key(self, chunk_key):
+        for chunk in self.doc.chunks:
+            if self._chunk_key(chunk) == chunk_key:
+                return chunk
+        return None
+
+    def _read_shift_parameters_from_file(self, file_path):
+        with open(file_path, 'r', encoding='utf-8') as f:
+            first_line = f.readline().strip()
+        parts = first_line.split()
+        if len(parts) < 4:
+            raise Exception("Invalid shift.txt format. Expected: CRS SHIFT_X SHIFT_Y SHIFT_Z")
+
+        crs_string = parts[0]
+        shift = ps.Vector([float(parts[1]), float(parts[2]), float(parts[3])])
+        crs = None
+        if crs_string.upper() not in ['LOCAL', 'LOCAL_CS', 'NONE']:
+            crs = ps.CoordinateSystem(crs_string)
+
+        return {
+            "line": first_line,
+            "crs_string": crs_string,
+            "crs": crs,
+            "shift": shift,
+        }
+
+    def _set_global_shift_state(self, file_path, parsed_shift):
+        self.global_shift_file = file_path
+        self.global_shift_line = parsed_shift["line"]
+        self.global_shift_vector = parsed_shift["shift"]
+        self.global_shift_crs_string = parsed_shift["crs_string"]
+        self.global_shift_crs = parsed_shift["crs"]
+        self.init_gui()
+
+    def get_global_shift_preview(self, compact=False):
+        if self.global_shift_vector is None:
+            return "NONE"
+        text = (
+            f"{self.global_shift_crs_string} "
+            f"{self.global_shift_vector.x:.3f} "
+            f"{self.global_shift_vector.y:.3f} "
+            f"{self.global_shift_vector.z:.3f}"
+        )
+        if compact and len(text) > 56:
+            return text[:56] + "..."
+        return text
+
+    def load_global_shift_file(self):
+        try:
+            shift_path = ps.app.getOpenFileName("Select global shift.txt file")
+            if not shift_path:
+                return
+            parsed = self._read_shift_parameters_from_file(shift_path)
+            self._set_global_shift_state(shift_path, parsed)
+            ps.app.messageBox(
+                "Global shift loaded:\n"
+                + self.get_global_shift_preview(compact=False)
+            )
+        except Exception as e:
+            ps.app.messageBox(f"Error: Unable to load global shift: {str(e)}")
+
+    def show_global_shift_preview(self):
+        if self.global_shift_vector is None:
+            ps.app.messageBox("Global shift is not set.")
+            return
+        origin = self.global_shift_file if self.global_shift_file else "N/A"
+        ps.app.messageBox(
+            "Current global shift:\n"
+            + self.get_global_shift_preview(compact=False)
+            + f"\n\nSource file:\n{origin}"
+        )
+
+    def clear_global_shift(self):
+        self.global_shift_file = None
+        self.global_shift_line = None
+        self.global_shift_vector = None
+        self.global_shift_crs_string = None
+        self.global_shift_crs = None
+        self.init_gui()
+        ps.app.messageBox("Global shift cleared.")
+
+    def _resolve_shift_for_operation(self, operation_label, ask_if_missing=True):
+        if self.global_shift_vector is not None:
+            return self.global_shift_crs, self.global_shift_vector, self.global_shift_line
+
+        if not ask_if_missing:
+            return None, None, None
+
+        shift_path = ps.app.getOpenFileName(f"{operation_label} - Select shift.txt (optional)")
+        if not shift_path:
+            return None, None, None
+        parsed = self._read_shift_parameters_from_file(shift_path)
+        return parsed["crs"], parsed["shift"], parsed["line"]
+
+    def _set_chunk_textured_flag(self, chunk, value):
+        if hasattr(chunk, "meta"):
+            chunk.meta["3dsc_workflow_textured"] = "1" if value else "0"
+
+    def _is_chunk_textured(self, chunk):
+        try:
+            if hasattr(chunk, "meta") and chunk.meta.get("3dsc_workflow_textured") == "1":
+                return True
+        except Exception:
+            pass
+
+        model = getattr(chunk, "model", None)
+        if not model:
+            return False
+
+        try:
+            if hasattr(model, "textures") and len(model.textures) > 0:
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _safe_remove_asset(self, chunk, asset):
+        if asset is None:
+            return
+        try:
+            chunk.remove(asset)
+        except Exception:
+            pass
+
+    def _clear_all_models_in_chunk(self, chunk):
+        models = []
+        try:
+            models = list(chunk.models)
+        except Exception:
+            pass
+
+        for model in models:
+            self._safe_remove_asset(chunk, model)
+
+        if getattr(chunk, "model", None):
+            self._safe_remove_asset(chunk, chunk.model)
+
+    def _prepare_lightweight_chunk(self, chunk):
+        self._clear_all_models_in_chunk(chunk)
+        for attr in ["tiled_model", "dense_cloud", "depth_maps", "elevation", "orthomosaic"]:
+            asset = getattr(chunk, attr, None)
+            self._safe_remove_asset(chunk, asset)
+
+    def _extract_models(self, chunk):
+        try:
+            models = list(chunk.models)
+            if models:
+                return models
+        except Exception:
+            pass
+        return [chunk.model] if getattr(chunk, "model", None) else []
+
+    def _activate_model(self, chunk, model):
+        try:
+            chunk.model = model
+            return True
+        except Exception:
+            return False
+
+    def _build_tiled_model_with_area_hint(self, chunk, target_area_m2):
+        side_len = max(0.5, math.sqrt(target_area_m2))
+        last_error = None
+        attempts = [
+            {"tile_size": side_len},
+            {"tile_size": int(max(64, side_len * 100))},
+            {},
+        ]
+        for kwargs in attempts:
+            try:
+                chunk.buildTiledModel(**kwargs)
+                return side_len
+            except Exception as e:
+                last_error = e
+                continue
+        raise Exception(f"Unable to build tiled model: {str(last_error)}")
+
+    def _get_workflow_chunks(self):
+        chunks = []
+        for chunk_key in self.workflow_state.get("generated_chunk_keys", []):
+            chunk = self._get_chunk_by_key(chunk_key)
+            if chunk:
+                chunks.append(chunk)
+        return chunks
+
+    def _show_step3_options_dialog(self, has_tiled_model=False):
+        result = {}
+
+        root = tk.Tk()
+        root.title("3DSC STEP3/STEP4 - Cut Mesh Options")
+        root.resizable(False, False)
+        root.geometry("820x420")
+        root.lift()
+
+        frame = ttk.Frame(root, padding=12)
+        frame.pack(fill="both", expand=True)
+
+        ttk.Label(frame, text="Workflow Cut Options", font=("Arial", 12, "bold")).grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            frame,
+            text="Global Shift: " + self.get_global_shift_preview(compact=False),
+            foreground="#333333"
+        ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(2, 12))
+
+        area_var = tk.StringVar(value="80")
+        run_step2_var = tk.BooleanVar(value=True)
+        output_multi_chunks_var = tk.BooleanVar(value=True)
+        grid_naming_var = tk.BooleanVar(value=True)
+        export_temp_textures_var = tk.BooleanVar(value=False)
+        cleanup_temp_files_var = tk.BooleanVar(value=False)
+        rebuild_tiled_var = tk.BooleanVar(value=True if has_tiled_model else True)
+
+        default_folder = self.workflow_state.get("cut_folder") or os.getcwd()
+        export_root_var = tk.StringVar(value=default_folder)
+
+        ttk.Label(frame, text="Block plan area (m²):").grid(row=2, column=0, sticky="w")
+        ttk.Entry(frame, textvariable=area_var, width=14).grid(row=2, column=1, sticky="w")
+
+        ttk.Checkbutton(
+            frame,
+            text="Run STEP2 now (prepare/flag LOD0 before cut)",
+            variable=run_step2_var
+        ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 0))
+
+        ttk.Checkbutton(
+            frame,
+            text="Output mode: one chunk per block (recommended)",
+            variable=output_multi_chunks_var
+        ).grid(row=4, column=0, columnspan=3, sticky="w")
+
+        ttk.Checkbutton(
+            frame,
+            text="Use grid naming for blocks (x_y)",
+            variable=grid_naming_var
+        ).grid(row=5, column=0, columnspan=3, sticky="w")
+
+        ttk.Checkbutton(
+            frame,
+            text="Export temporary PNG textures during STEP3 (slower)",
+            variable=export_temp_textures_var
+        ).grid(row=6, column=0, columnspan=3, sticky="w")
+
+        ttk.Checkbutton(
+            frame,
+            text="Delete temporary STEP3 files after STEP4 import",
+            variable=cleanup_temp_files_var
+        ).grid(row=7, column=0, columnspan=3, sticky="w")
+
+        ttk.Checkbutton(
+            frame,
+            text="Rebuild tiled model with current area settings",
+            variable=rebuild_tiled_var
+        ).grid(row=8, column=0, columnspan=3, sticky="w", pady=(0, 8))
+
+        ttk.Label(frame, text="STEP3 output folder:").grid(row=9, column=0, sticky="w")
+        folder_entry = ttk.Entry(frame, textvariable=export_root_var, width=70)
+        folder_entry.grid(row=10, column=0, columnspan=2, sticky="we", pady=(2, 0))
+
+        def browse_output_folder():
+            selected = filedialog.askdirectory(
+                title="Select STEP3 output folder",
+                initialdir=export_root_var.get() if export_root_var.get() else os.getcwd()
+            )
+            if selected:
+                export_root_var.set(selected)
+
+        ttk.Button(frame, text="Browse...", command=browse_output_folder).grid(row=10, column=2, padx=(8, 0), sticky="w")
+
+        status_var = tk.StringVar(value="")
+        ttk.Label(frame, textvariable=status_var, foreground="#b00020").grid(
+            row=11, column=0, columnspan=3, sticky="w", pady=(8, 0)
+        )
+
+        def on_ok():
+            try:
+                area_value = float(str(area_var.get()).replace(",", "."))
+                if area_value <= 0:
+                    raise ValueError("Block area must be > 0.")
+                out_dir = export_root_var.get().strip()
+                if not out_dir:
+                    raise ValueError("Select a STEP3 output folder.")
+                result.update(
+                    {
+                        "target_area_m2": area_value,
+                        "run_step2_now": bool(run_step2_var.get()),
+                        "output_multi_chunks": bool(output_multi_chunks_var.get()),
+                        "grid_naming": bool(grid_naming_var.get()),
+                        "export_temp_textures": bool(export_temp_textures_var.get()),
+                        "cleanup_temp_files": bool(cleanup_temp_files_var.get()),
+                        "rebuild_tiled_model": bool(rebuild_tiled_var.get()),
+                        "export_root": out_dir,
+                    }
+                )
+                root.destroy()
+            except Exception as e:
+                status_var.set(str(e))
+
+        def on_cancel():
+            result.clear()
+            root.destroy()
+
+        btn_row = ttk.Frame(frame)
+        btn_row.grid(row=12, column=0, columnspan=3, sticky="e", pady=(14, 0))
+        ttk.Button(btn_row, text="Cancel", command=on_cancel).pack(side="right")
+        ttk.Button(btn_row, text="Run STEP3", command=on_ok).pack(side="right", padx=(0, 8))
+
+        root.protocol("WM_DELETE_WINDOW", on_cancel)
+        root.mainloop()
+        return result if result else None
+
+    def _show_step7_options_dialog(self):
+        result = {}
+
+        root = tk.Tk()
+        root.title("3DSC STEP7 - Export Workflow Blocks")
+        root.resizable(False, False)
+        root.geometry("820x300")
+        root.lift()
+
+        frame = ttk.Frame(root, padding=12)
+        frame.pack(fill="both", expand=True)
+
+        has_global_shift = self.global_shift_vector is not None
+        use_shift_var = tk.BooleanVar(value=True if has_global_shift else False)
+        save_textures_var = tk.BooleanVar(value=True)
+
+        default_export = self.workflow_state.get("cut_folder") or os.getcwd()
+        export_folder_var = tk.StringVar(value=default_export)
+        shift_file_var = tk.StringVar(value="")
+
+        ttk.Label(frame, text="Workflow STEP7 Export", font=("Arial", 12, "bold")).grid(row=0, column=0, sticky="w")
+        ttk.Label(frame, text="Export folder:").grid(row=1, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(frame, textvariable=export_folder_var, width=70).grid(row=2, column=0, columnspan=2, sticky="we", pady=(2, 0))
+
+        def browse_export_folder():
+            selected = filedialog.askdirectory(
+                title="Select STEP7 export folder",
+                initialdir=export_folder_var.get() if export_folder_var.get() else os.getcwd()
+            )
+            if selected:
+                export_folder_var.set(selected)
+
+        ttk.Button(frame, text="Browse...", command=browse_export_folder).grid(row=2, column=2, padx=(8, 0), sticky="w")
+
+        ttk.Checkbutton(frame, text="Use shift for export", variable=use_shift_var).grid(
+            row=3, column=0, columnspan=3, sticky="w", pady=(10, 0)
+        )
+        ttk.Checkbutton(frame, text="Export UV + textures", variable=save_textures_var).grid(
+            row=4, column=0, columnspan=3, sticky="w"
+        )
+
+        if has_global_shift:
+            ttk.Label(
+                frame,
+                text="Using GLOBAL shift: " + self.get_global_shift_preview(compact=False),
+                foreground="#333333"
+            ).grid(row=5, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        else:
+            ttk.Label(frame, text="Shift file (optional, used only if 'Use shift' is enabled):").grid(
+                row=5, column=0, columnspan=3, sticky="w", pady=(8, 0)
+            )
+            shift_entry = ttk.Entry(frame, textvariable=shift_file_var, width=70)
+            shift_entry.grid(row=6, column=0, columnspan=2, sticky="we", pady=(2, 0))
+
+            def browse_shift_file():
+                selected = ps.app.getOpenFileName("Select shift.txt file for STEP7")
+                if selected:
+                    shift_file_var.set(selected)
+
+            ttk.Button(frame, text="Browse...", command=browse_shift_file).grid(row=6, column=2, padx=(8, 0), sticky="w")
+
+            def update_shift_file_state(*_):
+                state = "normal" if use_shift_var.get() else "disabled"
+                shift_entry.configure(state=state)
+
+            use_shift_var.trace_add("write", update_shift_file_state)
+            update_shift_file_state()
+
+        status_var = tk.StringVar(value="")
+        ttk.Label(frame, textvariable=status_var, foreground="#b00020").grid(
+            row=7, column=0, columnspan=3, sticky="w", pady=(10, 0)
+        )
+
+        def on_ok():
+            try:
+                out_dir = export_folder_var.get().strip()
+                if not out_dir:
+                    raise ValueError("Select an export folder.")
+
+                shift_file = shift_file_var.get().strip() if not has_global_shift else ""
+                if use_shift_var.get() and not has_global_shift and not shift_file:
+                    raise ValueError("Select a shift.txt file or disable 'Use shift'.")
+
+                result.update(
+                    {
+                        "export_folder": out_dir,
+                        "use_shift": bool(use_shift_var.get()),
+                        "save_textures": bool(save_textures_var.get()),
+                        "shift_file": shift_file,
+                    }
+                )
+                root.destroy()
+            except Exception as e:
+                status_var.set(str(e))
+
+        def on_cancel():
+            result.clear()
+            root.destroy()
+
+        btn_row = ttk.Frame(frame)
+        btn_row.grid(row=8, column=0, columnspan=3, sticky="e", pady=(14, 0))
+        ttk.Button(btn_row, text="Cancel", command=on_cancel).pack(side="right")
+        ttk.Button(btn_row, text="Run STEP7 Export", command=on_ok).pack(side="right", padx=(0, 8))
+
+        root.protocol("WM_DELETE_WINDOW", on_cancel)
+        root.mainloop()
+        return result if result else None
 
     # Implementation of existing scripts
     def import_multiple_models(self):
@@ -83,6 +529,12 @@ class MetashapeTools:
                             print(f"Using CRS: {projection_coor}")
                         else:
                             print("Using local coordinates (no CRS)")
+
+            if not coord_shift and self.global_shift_vector is not None:
+                coord_shift = True
+                shift_coor = self.global_shift_vector
+                projection_coor = self.global_shift_crs_string if self.global_shift_crs else None
+                print("Using global shift from GUI settings.")
             
             # Import each model
             obj_list = []
@@ -144,21 +596,10 @@ class MetashapeTools:
             model_path = ps.app.getOpenFileName("Specify the 3D model file:")
             if not model_path:
                 return
-                
-            # Ask user to specify a shift file (optional)
-            shift_path = ps.app.getOpenFileName("Specify the shift file (optional):")
-            shift_coor, projection_coor = None, None
-            
-            if shift_path:
-                with open(shift_path, 'r', encoding='utf-8') as file:
-                    first_line = file.readline()
-                    parts = first_line.split()
-                    crs_string = parts[0]
-                    shift_coor = ps.Vector([float(parts[1]), float(parts[2]), float(parts[3])])
-                    
-                    # Handle CRS: only set if not LOCAL or NONE
-                    if crs_string.upper() not in ['LOCAL', 'LOCAL_CS', 'NONE']:
-                        projection_coor = crs_string
+
+            projection_coor_obj, shift_coor, _ = self._resolve_shift_for_operation(
+                "Import Single Model with Shift", ask_if_missing=True
+            )
             
             # Check for active chunk or create new one
             if self.doc.chunk is None:
@@ -170,8 +611,8 @@ class MetashapeTools:
             
             # Import the model
             if shift_coor:
-                if projection_coor:
-                    chunk.importModel(path=model_path, shift=shift_coor, crs=ps.CoordinateSystem(projection_coor))
+                if projection_coor_obj:
+                    chunk.importModel(path=model_path, shift=shift_coor, crs=projection_coor_obj)
                 else:
                     chunk.importModel(path=model_path, shift=shift_coor)
             else:
@@ -189,25 +630,9 @@ class MetashapeTools:
             if not import_folder:
                 return
                 
-            # Get the shift.txt file
-            shift_file = ps.app.getOpenFileName("Select the shift.txt file")
-            if not shift_file:
-                return
-                
-            # Read shift values
-            with open(shift_file, 'r', encoding='utf-8') as f:
-                first_line = f.readline()
-                parts = first_line.split()
-                crs_string = parts[0]
-                shift_coor_x = float(parts[1])
-                shift_coor_y = float(parts[2])
-                shift_coor_z = float(parts[3])
-                shift = ps.Vector([shift_coor_x, shift_coor_y, shift_coor_z])
-                
-                # Handle CRS: only set if not LOCAL or NONE
-                projection_coor = None
-                if crs_string.upper() not in ['LOCAL', 'LOCAL_CS', 'NONE']:
-                    projection_coor = crs_string
+            _, shift, _ = self._resolve_shift_for_operation(
+                "Import Tiled Models", ask_if_missing=True
+            )
             
             # Create a new chunk for the reimported model
             new_chunk = self.doc.addChunk()
@@ -219,7 +644,10 @@ class MetashapeTools:
             # Import each OBJ file
             for obj_file in obj_files:
                 obj_path = os.path.join(import_folder, obj_file)
-                new_chunk.importModel(obj_path, ps.ModelFormat.ModelFormatOBJ, shift=shift)
+                if shift:
+                    new_chunk.importModel(obj_path, ps.ModelFormat.ModelFormatOBJ, shift=shift)
+                else:
+                    new_chunk.importModel(obj_path, ps.ModelFormat.ModelFormatOBJ)
             
             # Create unified mesh from imported tiles
             new_chunk.buildModel(surface_type=ps.Arbitrary, interpolation=ps.EnabledInterpolation)
@@ -236,93 +664,356 @@ class MetashapeTools:
         except Exception as e:
             ps.app.messageBox(f"Error: An error occurred: {str(e)}")
 
+    def _compute_texture_pages(self, area_model, tex_size, ratio, x_res_a_terra, max_area=None):
+        if max_area is not None and area_model > max_area:
+            return 12
+        numtex = pow((10000 / x_res_a_terra), 2) / (tex_size * tex_size * ratio)
+        numtex_x_area = (numtex * area_model) / 100
+        return max(1, round(numtex_x_area, 0))
+
+    def _texturize_chunk_models(self, chunk, tex_size=4096, ratio=0.6, x_res_a_terra=1.26, max_area=None):
+        models = self._extract_models(chunk)
+        if not models:
+            return 0
+
+        textured_models = 0
+        for model in models:
+            if not self._activate_model(chunk, model):
+                if textured_models > 0:
+                    break
+
+            current_model = chunk.model
+            if not current_model:
+                continue
+
+            area_model = current_model.area()
+            if area_model is None or area_model == 0.0:
+                print(f"{chunk.label} has no area. Maybe the model isn't metric.")
+                continue
+
+            tex_num = self._compute_texture_pages(
+                area_model=area_model,
+                tex_size=tex_size,
+                ratio=ratio,
+                x_res_a_terra=x_res_a_terra,
+                max_area=max_area,
+            )
+            print(f"{chunk.label} has an area of {area_model} mq and needs {int(tex_num)} textures.")
+
+            chunk.buildUV(mapping_mode=ps.GenericMapping, page_count=tex_num, texture_size=tex_size)
+            chunk.buildTexture(
+                blending_mode=ps.MosaicBlending,
+                texture_size=tex_size,
+                fill_holes=True,
+                ghosting_filter=True
+            )
+            textured_models += 1
+
+        if textured_models > 0:
+            self._set_chunk_textured_flag(chunk, True)
+        return textured_models
+
+    def _texturize_chunk_list(self, chunks, max_area=None, progress_title="Texturizing"):
+        processed = 0
+        total = len(chunks)
+        for idx, chunk in enumerate(chunks, start=1):
+            if not chunk.model:
+                continue
+            processed += self._texturize_chunk_models(chunk, max_area=max_area)
+            if total > 0:
+                progress = (idx / total) * 100
+                print(f"{progress_title}: {progress:.2f}% ({idx}/{total} chunks)")
+            ps.app.update()
+        return processed
+
     def texturize_models(self):
         try:
-            x_res_a_terra = 1.26
-            tex = 4096
-            ratio = 0.6
-            
             print("Starting texturize script")
             ps.app.update()
-            
-            for chunk in self.doc.chunks:
-                if not chunk.model:
-                    continue
-                    
-                current_model = chunk.model
-                area_model = current_model.area()
-                
-                if area_model is None or area_model == 0.0:
-                    print(f"{chunk.label} has no area. Maybe the model isn't metric.")
-                    continue
-                
-                # Calculate number of textures needed
-                numtex = pow((10000 / x_res_a_terra), 2) / (tex * tex * ratio)
-                numtex_x_area = (numtex * area_model) / 100
-                tex_num = max(1, round(numtex_x_area, 0))
-                
-                print(f"{chunk.label} has an area of {area_model} mq and needs {int(tex_num)} textures.")
-                
-                # Build UV and texture
-                chunk.buildUV(mapping_mode=ps.GenericMapping, page_count=tex_num, texture_size=tex)
-                chunk.buildTexture(blending_mode=ps.MosaicBlending, texture_size=tex, 
-                                  fill_holes=True, ghosting_filter=True)
-            
+            processed = self._texturize_chunk_list(list(self.doc.chunks), max_area=None, progress_title="Texturize")
             ps.app.update()
-            ps.app.messageBox("Success - Texturization completed for all chunks.")
-            
+            ps.app.messageBox(f"Success - Texturization completed. Textured models: {processed}.")
         except Exception as e:
             ps.app.messageBox(f"Error: An error occurred: {str(e)}")
-    
+
     def texturize_models_200(self):
         try:
-            x_res_a_terra = 1.26
-            tex = 4096
-            ratio = 0.6
-            max_area = 200  # Maximum area in square meters
-            
             print("Starting texturize script with 200m² limit")
             ps.app.update()
-            
-            # Count total chunks for progress reporting
-            total_chunks = len(self.doc.chunks)
-            chunks_processed = 0
-            
-            for chunk in self.doc.chunks:
-                if not chunk.model:
-                    continue
-                    
-                current_model = chunk.model
-                area_model = current_model.area()
-                
-                if area_model is None or area_model == 0.0:
-                    print(f"{chunk.label} has no area. Maybe the model isn't metric.")
-                    chunks_processed += 1
-                    continue
-                
-                # Calculate number of textures with area limit
-                max_tex = 12  # Maximum number of textures for 200 sq meters
-                if area_model > max_area:
-                    tex_num = max_tex
-                else:
-                    numtex = pow((10000 / x_res_a_terra), 2) / (tex * tex * ratio)
-                    numtex_x_area = (numtex * area_model) / 100
-                    tex_num = max(1, round(numtex_x_area, 0))
-                
-                print(f"{chunk.label} has an area of {area_model} mq and needs {int(tex_num)} textures.")
-                
-                # Build UV and texture
-                chunk.buildUV(mapping_mode=ps.GenericMapping, page_count=tex_num, texture_size=tex)
-                chunk.buildTexture(blending_mode=ps.MosaicBlending, texture_size=tex, 
-                                  fill_holes=True, ghosting_filter=True)
-                
-                chunks_processed += 1
-                progress = (chunks_processed / total_chunks) * 100
-                print(f"Progress: {progress:.2f}% completed ({chunks_processed}/{total_chunks} chunks processed)")
-            
+            processed = self._texturize_chunk_list(list(self.doc.chunks), max_area=200, progress_title="Texturize200")
             ps.app.update()
-            ps.app.messageBox("Success - Texturization completed for all chunks with 200m² limit.")
-            
+            ps.app.messageBox(f"Success - Texturization with 200m² limit completed. Textured models: {processed}.")
+        except Exception as e:
+            ps.app.messageBox(f"Error: An error occurred: {str(e)}")
+
+    def prepare_or_flag_lod0(self):
+        try:
+            chunk = self.doc.chunk
+            if chunk is None or not chunk.model:
+                ps.app.messageBox("Error - Select a chunk with a mesh model first.")
+                return
+
+            create_decimated_copy = ps.app.getBool(
+                "STEP2 - Create an optional LOD0 decimated copy?\n"
+                "(No = use current giant mesh as LOD0)"
+            )
+
+            target_chunk = chunk
+            mode = "original"
+            info = "Current mesh flagged as LOD0."
+
+            if create_decimated_copy:
+                density_str = ps.app.getString(
+                    "Target polygon density for LOD0 (polygons per m²):",
+                    "10000"
+                )
+                if not density_str:
+                    return
+                target_density = float(str(density_str).replace(",", "."))
+                if target_density <= 0:
+                    raise Exception("Polygon density must be > 0.")
+
+                target_chunk = chunk.copy()
+                target_chunk.label = (chunk.label if chunk.label else "chunk") + "_LOD0"
+                self.doc.chunk = target_chunk
+
+                area_m2 = target_chunk.model.area() if target_chunk.model else 0
+                target_faces = int(max(10000, area_m2 * target_density))
+
+                try:
+                    target_chunk.decimateModel(face_count=target_faces)
+                    mode = "decimated"
+                    info = f"LOD0 decimated copy created with target ~{target_faces} faces."
+                except Exception as dec_err:
+                    mode = "copy_no_decimation"
+                    info = (
+                        "LOD0 copy created, but decimation was not applied by Metashape API.\n"
+                        f"Reason: {str(dec_err)}"
+                    )
+
+            if hasattr(target_chunk, "meta"):
+                target_chunk.meta["3dsc_workflow_lod0"] = "1"
+                target_chunk.meta["3dsc_workflow_lod0_mode"] = mode
+            self.workflow_state["lod0_chunk_key"] = self._chunk_key(target_chunk)
+            self.workflow_state["cut_source_chunk_key"] = self._chunk_key(target_chunk)
+            self._set_chunk_textured_flag(target_chunk, False)
+
+            ps.app.messageBox("STEP2 completed.\n" + info)
+
+        except Exception as e:
+            ps.app.messageBox(f"Error: An error occurred: {str(e)}")
+
+    def texturize_workflow_blocks(self):
+        try:
+            if not self.workflow_state.get("cut_blocks"):
+                ps.app.messageBox("No workflow blocks found. Run STEP3 first.")
+                return
+
+            mode = self.workflow_state.get("cut_mode")
+            chunks = []
+            if mode == "multi_chunk":
+                chunks = self._get_workflow_chunks()
+            else:
+                source_chunk = self._get_chunk_by_key(self.workflow_state.get("cut_source_chunk_key"))
+                if source_chunk:
+                    chunks = [source_chunk]
+
+            if not chunks:
+                ps.app.messageBox("No target chunks available for STEP5 texturing.")
+                return
+
+            processed = self._texturize_chunk_list(chunks, max_area=None, progress_title="Workflow STEP5")
+            ps.app.update()
+            ps.app.messageBox(f"STEP5 completed. Textured models: {processed}.")
+        except Exception as e:
+            ps.app.messageBox(f"Error: An error occurred: {str(e)}")
+
+    def generate_workflow_lods_experimental(self):
+        try:
+            if not self.workflow_state.get("cut_blocks"):
+                ps.app.messageBox("No workflow blocks found. Run STEP3 first.")
+                return
+
+            ratio1_str = ps.app.getString("STEP6 - LOD1 decimation ratio (0..1):", "0.5")
+            ratio2_str = ps.app.getString("STEP6 - LOD2 decimation ratio (0..1):", "0.25")
+            if not ratio1_str or not ratio2_str:
+                return
+
+            ratio1 = float(str(ratio1_str).replace(",", "."))
+            ratio2 = float(str(ratio2_str).replace(",", "."))
+            if ratio1 <= 0 or ratio1 >= 1 or ratio2 <= 0 or ratio2 >= 1:
+                raise Exception("LOD ratios must be between 0 and 1.")
+
+            preserve_borders = ps.app.getBool("Try to preserve borders during decimation? (if supported)")
+            build_normal_maps = ps.app.getBool("Build normal maps for generated LOD chunks? (if supported)")
+
+            source_chunks = []
+            mode = self.workflow_state.get("cut_mode")
+            if mode == "multi_chunk":
+                source_chunks = self._get_workflow_chunks()
+            else:
+                source_chunk = self._get_chunk_by_key(self.workflow_state.get("cut_source_chunk_key"))
+                if source_chunk:
+                    source_chunks = [source_chunk]
+
+            if not source_chunks:
+                raise Exception("No source chunk available for STEP6.")
+
+            created = 0
+            for source_chunk in source_chunks:
+                if not source_chunk.model:
+                    continue
+
+                base_area = source_chunk.model.area() if source_chunk.model else 0.0
+                base_faces = int(max(1000, base_area * 10000)) if base_area else 100000
+
+                for lod_name, ratio in [("LOD1", ratio1), ("LOD2", ratio2)]:
+                    lod_chunk = source_chunk.copy()
+                    lod_chunk.label = f"{source_chunk.label}_{lod_name}"
+                    try:
+                        face_count = int(max(500, base_faces * ratio))
+                        try:
+                            lod_chunk.decimateModel(face_count=face_count, preserve_boundary=preserve_borders)
+                        except Exception:
+                            lod_chunk.decimateModel(face_count=face_count)
+                    except Exception as dec_err:
+                        print(f"STEP6 warning - decimation failed for {lod_chunk.label}: {str(dec_err)}")
+
+                    if build_normal_maps:
+                        try:
+                            lod_chunk.buildNormalMap()
+                        except Exception as nm_err:
+                            print(f"STEP6 warning - normal map not generated for {lod_chunk.label}: {str(nm_err)}")
+
+                    self._set_chunk_textured_flag(lod_chunk, self._is_chunk_textured(source_chunk))
+                    created += 1
+                    ps.app.update()
+
+            ps.app.messageBox(
+                f"STEP6 completed (experimental). Created {created} LOD chunks.\n"
+                "Normal map and border preservation depend on the Metashape API version."
+            )
+
+        except Exception as e:
+            ps.app.messageBox(f"Error: An error occurred: {str(e)}")
+
+    def export_workflow_blocks_textured(self):
+        try:
+            if not self.workflow_state.get("cut_blocks"):
+                ps.app.messageBox("No workflow blocks found. Run STEP3 first.")
+                return
+
+            panel = self._show_step7_options_dialog()
+            if not panel:
+                return
+
+            export_folder = panel["export_folder"]
+            use_shift = False
+            shift_line = None
+            crs = None
+            shift = None
+
+            use_shift = panel["use_shift"]
+            if use_shift:
+                if self.global_shift_vector is not None:
+                    crs = self.global_shift_crs
+                    shift = self.global_shift_vector
+                    shift_line = self.global_shift_line
+                else:
+                    shift_file = panel.get("shift_file")
+                    parsed = self._read_shift_parameters_from_file(shift_file)
+                    crs = parsed["crs"]
+                    shift = parsed["shift"]
+                    shift_line = parsed["line"]
+
+            save_textures = panel["save_textures"]
+            mode = self.workflow_state.get("cut_mode")
+            exported = 0
+
+            if mode == "multi_chunk":
+                chunks = self._get_workflow_chunks()
+                if not chunks:
+                    ps.app.messageBox("No workflow chunks found. Run STEP3 again.")
+                    return
+
+                for chunk in chunks:
+                    if not self._is_chunk_textured(chunk):
+                        raise Exception(f"Chunk '{chunk.label}' is not marked as textured. Run STEP5 first.")
+                    if not chunk.model:
+                        continue
+
+                    out_name = (chunk.label if chunk.label else "block") + ".obj"
+                    out_path = os.path.join(export_folder, out_name)
+                    kwargs = dict(
+                        path=out_path,
+                        format=ps.ModelFormat.ModelFormatOBJ,
+                        save_texture=save_textures,
+                        save_uv=save_textures,
+                        save_normals=True,
+                        save_colors=True
+                    )
+                    if use_shift and shift is not None:
+                        kwargs["shift"] = shift
+                        if crs is not None:
+                            kwargs["crs"] = crs
+                    chunk.exportModel(**kwargs)
+                    exported += 1
+            else:
+                chunk = self._get_chunk_by_key(self.workflow_state.get("cut_source_chunk_key"))
+                if chunk is None:
+                    chunk = self.doc.chunk
+                if chunk is None or not chunk.model:
+                    raise Exception("No chunk/model available for STEP7 export.")
+                if not self._is_chunk_textured(chunk):
+                    raise Exception("Current workflow chunk is not marked as textured. Run STEP5 first.")
+
+                models = self._extract_models(chunk)
+                block_defs = self.workflow_state.get("cut_blocks", [])
+
+                if len(models) <= 1:
+                    out_path = os.path.join(export_folder, "workflow_block.obj")
+                    kwargs = dict(
+                        path=out_path,
+                        format=ps.ModelFormat.ModelFormatOBJ,
+                        save_texture=save_textures,
+                        save_uv=save_textures,
+                        save_normals=True,
+                        save_colors=True
+                    )
+                    if use_shift and shift is not None:
+                        kwargs["shift"] = shift
+                        if crs is not None:
+                            kwargs["crs"] = crs
+                    chunk.exportModel(**kwargs)
+                    exported = 1
+                else:
+                    for idx, model in enumerate(models):
+                        if not self._activate_model(chunk, model):
+                            continue
+                        block_name = f"block_{idx:04d}"
+                        if idx < len(block_defs):
+                            block_name = block_defs[idx]["name"]
+                        out_path = os.path.join(export_folder, block_name + ".obj")
+                        kwargs = dict(
+                            path=out_path,
+                            format=ps.ModelFormat.ModelFormatOBJ,
+                            save_texture=save_textures,
+                            save_uv=save_textures,
+                            save_normals=True,
+                            save_colors=True
+                        )
+                        if use_shift and shift is not None:
+                            kwargs["shift"] = shift
+                            if crs is not None:
+                                kwargs["crs"] = crs
+                        chunk.exportModel(**kwargs)
+                        exported += 1
+
+            if use_shift and shift_line:
+                with open(os.path.join(export_folder, "shift.txt"), "w", encoding="utf-8") as f:
+                    f.write(shift_line + "\n")
+
+            ps.app.messageBox(f"STEP7 completed. Exported meshes: {exported}.")
         except Exception as e:
             ps.app.messageBox(f"Error: An error occurred: {str(e)}")
     
@@ -363,6 +1054,12 @@ class MetashapeTools:
                             print(f"Using CRS: {projection_coor}")
                         else:
                             print("Using local coordinates (no CRS)")
+
+            if not coord_shift and self.global_shift_vector is not None:
+                coord_shift = True
+                shift_coor = self.global_shift_vector
+                projection_coor = self.global_shift_crs_string if self.global_shift_crs else None
+                print("Using global shift from GUI settings.")
             
             # Export each chunk
             number = 0
@@ -453,23 +1150,9 @@ class MetashapeTools:
             
             chunk = self.doc.chunk
             
-            # Ask for shift file (optional)
-            shift_path = ps.app.getOpenFileName("Specify the shift file (optional):")
-            crs, shift_coor = None, None
-            
-            if shift_path:
-                with open(shift_path, 'r', encoding='utf-8') as file:
-                    first_line = file.readline()
-                    parts = first_line.split()
-                    crs_string = parts[0]
-                    shift_coor_x = float(parts[1])
-                    shift_coor_y = float(parts[2])
-                    shift_coor_z = float(parts[3])
-                    shift_coor = ps.Vector([shift_coor_x, shift_coor_y, shift_coor_z])
-                    
-                    # Handle CRS: only set if not LOCAL or NONE
-                    if crs_string.upper() not in ['LOCAL', 'LOCAL_CS', 'NONE']:
-                        crs = ps.CoordinateSystem(crs_string)
+            crs, shift_coor, _ = self._resolve_shift_for_operation(
+                "Export Single Model with Shift", ask_if_missing=True
+            )
             
             # Ask for destination folder and filename
             save_folder = ps.app.getExistingDirectory("Specify the folder to save the OBJ file:")
@@ -502,26 +1185,10 @@ class MetashapeTools:
             if not export_folder:
                 return
             export_folder += "/"
-            
-            # Get shift file
-            shift_file = ps.app.getOpenFileName("Select the shift.txt file")
-            if not shift_file:
-                return
-            
-            # Read shift values
-            with open(shift_file, 'r', encoding='utf-8') as f:
-                first_line = f.readline()
-                parts = first_line.split()
-                crs_string = parts[0]
-                shift_coor_x = float(parts[1])
-                shift_coor_y = float(parts[2])
-                shift_coor_z = float(parts[3])
-                shift = ps.Vector([shift_coor_x, shift_coor_y, shift_coor_z])
-                
-                # Handle CRS: only set if not LOCAL or NONE
-                projection_coor = None
-                if crs_string.upper() not in ['LOCAL', 'LOCAL_CS', 'NONE']:
-                    projection_coor = crs_string
+
+            _, shift, shift_line = self._resolve_shift_for_operation(
+                "Export Tiled Models", ask_if_missing=True
+            )
             
             # Get active chunk
             chunk = self.doc.chunk
@@ -546,14 +1213,165 @@ class MetashapeTools:
                 obj_path = os.path.join(export_folder, f"{tile_name}.obj")
                 png_path = os.path.join(export_folder, f"{tile_name}.png")
                 
-                # Export the tile with shift
-                tiled_model.exportTile(tile_index, obj_path, tile_format, translation=shift)
+                if shift:
+                    tiled_model.exportTile(tile_index, obj_path, tile_format, translation=shift)
+                else:
+                    tiled_model.exportTile(tile_index, obj_path, tile_format)
                 
                 # Export the texture
                 tiled_model.exportTileTexture(tile_index, png_path, texture_format)
+
+            if shift_line:
+                with open(os.path.join(export_folder, "shift.txt"), "w", encoding="utf-8") as f:
+                    f.write(shift_line + "\n")
             
             ps.app.messageBox(f"Success - Exported {len(tiled_model.tiles)} tiled models successfully.")
             
+        except Exception as e:
+            ps.app.messageBox(f"Error: An error occurred: {str(e)}")
+
+    def cut_giant_mesh_into_blocks_with_shift(self):
+        try:
+            if self.doc.chunk is None:
+                ps.app.messageBox("Error - No active chunk found.")
+                return
+
+            chunk = self.doc.chunk
+            if not chunk.model:
+                ps.app.messageBox("Error - No mesh model found in the active chunk.")
+                return
+
+            panel = self._show_step3_options_dialog(has_tiled_model=bool(chunk.tiled_model))
+            if not panel:
+                return
+
+            run_step2_now = panel["run_step2_now"]
+            if run_step2_now:
+                self.prepare_or_flag_lod0()
+                lod_chunk = self._get_chunk_by_key(self.workflow_state.get("lod0_chunk_key"))
+                if lod_chunk and lod_chunk.model:
+                    chunk = lod_chunk
+                    self.doc.chunk = chunk
+
+            target_area_m2 = panel["target_area_m2"]
+            output_multi_chunks = panel["output_multi_chunks"]
+            grid_naming = panel["grid_naming"]
+            export_temp_textures = panel["export_temp_textures"]
+            cleanup_temp_files = panel["cleanup_temp_files"]
+            export_root = panel["export_root"]
+            rebuild_tiled = panel["rebuild_tiled_model"]
+            if rebuild_tiled or not chunk.tiled_model:
+                self._build_tiled_model_with_area_hint(chunk, target_area_m2)
+                ps.app.update()
+
+            tiled_model = chunk.tiled_model
+            if not tiled_model:
+                raise Exception("Failed to build tiled model from the active chunk model.")
+
+            chunk_label = chunk.label if chunk.label else "active_chunk"
+            safe_label = "".join(c if c.isalnum() or c in ('_', '-', '.') else '_' for c in chunk_label)
+            blocks_folder = os.path.join(export_root, safe_label + "_workflow_blocks")
+            os.makedirs(blocks_folder, exist_ok=True)
+
+            tile_format = ps.TileFormat.TileFormatOBJ
+            texture_format = ps.ImageFormat.ImageFormatPNG
+            texture_errors = 0
+            cut_blocks = []
+            tile_count = len(tiled_model.tiles)
+            grid_cols = int(max(1, math.ceil(math.sqrt(tile_count))))
+
+            for tile_index in range(tile_count):
+                if grid_naming:
+                    row = (tile_index // grid_cols) + 1
+                    col = (tile_index % grid_cols) + 1
+                    block_name = f"block_x{col:03d}_y{row:03d}"
+                else:
+                    block_name = f"block_{tile_index:04d}"
+
+                obj_path = os.path.join(blocks_folder, block_name + ".obj")
+                png_path = os.path.join(blocks_folder, block_name + ".png")
+                tiled_model.exportTile(tile_index, obj_path, tile_format)
+
+                if export_temp_textures:
+                    try:
+                        tiled_model.exportTileTexture(tile_index, png_path, texture_format)
+                    except Exception:
+                        texture_errors += 1
+                        png_path = None
+                else:
+                    png_path = None
+
+                cut_blocks.append(
+                    {
+                        "index": tile_index,
+                        "name": block_name,
+                        "obj_path": obj_path,
+                        "png_path": png_path,
+                    }
+                )
+
+            generated_chunk_keys = []
+            same_chunk_warning = None
+
+            if output_multi_chunks:
+                for block in cut_blocks:
+                    new_chunk = chunk.copy()
+                    new_chunk.label = f"{safe_label}_{block['name']}"
+                    self._prepare_lightweight_chunk(new_chunk)
+                    new_chunk.importModel(path=block["obj_path"], format=ps.ModelFormat.ModelFormatOBJ)
+                    self._set_chunk_textured_flag(new_chunk, False)
+                    if hasattr(new_chunk, "meta"):
+                        new_chunk.meta["3dsc_workflow_block_name"] = block["name"]
+                    generated_chunk_keys.append(self._chunk_key(new_chunk))
+                self.workflow_state["cut_mode"] = "multi_chunk"
+                self.workflow_state["generated_chunk_keys"] = generated_chunk_keys
+            else:
+                self.workflow_state["cut_mode"] = "same_chunk"
+                self.workflow_state["generated_chunk_keys"] = []
+                existing_models = self._extract_models(chunk)
+                existing_ids = set(id(m) for m in existing_models)
+                for block in cut_blocks:
+                    chunk.importModel(path=block["obj_path"], format=ps.ModelFormat.ModelFormatOBJ)
+                models_after = self._extract_models(chunk)
+                new_models = [m for m in models_after if id(m) not in existing_ids]
+                for i, model in enumerate(new_models):
+                    if i >= len(cut_blocks):
+                        break
+                    try:
+                        model.label = cut_blocks[i]["name"]
+                    except Exception:
+                        pass
+                if len(cut_blocks) > 1 and len(new_models) <= 1:
+                    same_chunk_warning = (
+                        "Metashape API may not support robust multi-model management in one chunk in this version. "
+                        "Use STEP4 multi-chunk mode for full control on naming/texturing/export."
+                    )
+                self._set_chunk_textured_flag(chunk, False)
+
+            if cleanup_temp_files and output_multi_chunks:
+                for block in cut_blocks:
+                    if os.path.exists(block["obj_path"]):
+                        os.remove(block["obj_path"])
+                    if block["png_path"] and os.path.exists(block["png_path"]):
+                        os.remove(block["png_path"])
+
+            self.workflow_state["cut_blocks"] = cut_blocks
+            self.workflow_state["cut_folder"] = blocks_folder
+            self.workflow_state["cut_source_chunk_key"] = self._chunk_key(chunk)
+
+            msg = (
+                f"STEP3-4 completed.\n"
+                f"Blocks created: {len(cut_blocks)}\n"
+                f"Output mode: {'multi-chunk' if output_multi_chunks else 'same-chunk'}\n"
+                f"Blocks folder: {blocks_folder}\n\n"
+                f"Next: run STEP5 texturing, then STEP7 export."
+            )
+            if texture_errors > 0:
+                msg += f"\nNotice: {texture_errors} block textures were not exported in STEP3."
+            if same_chunk_warning:
+                msg += f"\nWarning: {same_chunk_warning}"
+            ps.app.messageBox(msg)
+
         except Exception as e:
             ps.app.messageBox(f"Error: An error occurred: {str(e)}")
     
