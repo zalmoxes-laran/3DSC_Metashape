@@ -13,7 +13,6 @@ from tkinter import ttk, messagebox, filedialog
 
 class MetashapeTools:
     def __init__(self):
-        self.doc = ps.app.document
         self.global_shift_file = None
         self.global_shift_line = None
         self.global_shift_vector = None
@@ -71,6 +70,13 @@ class MetashapeTools:
         
         # EXPERIMENTAL - iPad AR Camera Import
         # ps.app.addMenuItem(label + "/iPad/Import iPad AR Camera Data (EXPERIMENTAL)", self.import_ipad_cameras)
+
+    @property
+    def doc(self):
+        # Always return the CURRENT active document. Do not cache it: the menu
+        # persists across File > Open, so a cached reference would go stale and
+        # every command would act on (or reject) the wrong/old document.
+        return ps.app.document
 
     def show_menu(self):
         # Visualizza un messaggio quando si clicca sul menu principale
@@ -237,6 +243,26 @@ class MetashapeTools:
             return True
         except Exception:
             return False
+
+    def _mesh_stats(self, model):
+        """Return (face_count, surface_area_m2, density_faces_per_m2) for a model.
+
+        Any value may be None if unavailable. Note: area() is the 3D surface
+        area (walls, roof, terrain), not the ground footprint, so density is
+        faces per m² of mesh surface.
+        """
+        if not model:
+            return None, None, None
+        try:
+            faces = len(model.faces)
+        except Exception:
+            faces = None
+        try:
+            area = model.area()
+        except Exception:
+            area = None
+        density = (faces / area) if (faces and area) else None
+        return faces, area, density
 
     def _build_tiled_model_with_area_hint(self, chunk, target_area_m2):
         side_len = max(0.5, math.sqrt(target_area_m2))
@@ -674,7 +700,9 @@ class MetashapeTools:
             return 12
         numtex = pow((10000 / x_res_a_terra), 2) / (tex_size * tex_size * ratio)
         numtex_x_area = (numtex * area_model) / 100
-        return max(1, round(numtex_x_area, 0))
+        # Published Equation (1) rounding: 0.5 always rounds up, integer result.
+        # (Python's built-in round() uses banker's rounding, which would deviate.)
+        return max(1, int(math.floor(numtex_x_area + 0.5)))
 
     def _texturize_chunk_models(self, chunk, tex_size=4096, ratio=0.6, x_res_a_terra=1.26, max_area=None):
         models = self._extract_models(chunk)
@@ -754,47 +782,92 @@ class MetashapeTools:
     def prepare_or_flag_lod0(self):
         try:
             chunk = self.doc.chunk
-            if chunk is None or not chunk.model:
+            if chunk is None:
                 ps.app.messageBox("Error - Select a chunk with a mesh model first.")
                 return
+            # A model may exist in chunk.models without being the active
+            # chunk.model; accept it and activate it rather than rejecting.
+            models = self._extract_models(chunk)
+            if not models:
+                ps.app.messageBox("Error - Select a chunk with a mesh model first.")
+                return
+            if not getattr(chunk, "model", None):
+                self._activate_model(chunk, models[0])
 
             create_decimated_copy = ps.app.getBool(
                 "STEP1 - Create an optional LOD0 decimated copy?\n"
-                "(No = use current giant mesh as LOD0)"
+                "(No = use current giant mesh as LOD0)\n"
+                "The full-resolution mesh is always kept."
             )
 
             target_chunk = chunk
             mode = "original"
-            info = "Current mesh flagged as LOD0."
+            info = "Current mesh flagged as LOD0 (full resolution kept)."
+
+            # Always preserve the full-resolution mesh as the high-res source
+            # (used by STEP4 for normal maps and kept for archival).
+            if hasattr(chunk, "meta"):
+                chunk.meta["3dsc_workflow_highres"] = "1"
+            self.workflow_state["highres_source_chunk_key"] = self._chunk_key(chunk)
 
             if create_decimated_copy:
-                density_str = ps.app.getString(
-                    "Target polygon density for LOD0 (polygons per m²):",
-                    "10000"
-                )
+                # Show the real mesh stats so the target density is meaningful.
+                # density here is faces per m² of 3D SURFACE (not footprint):
+                # asking for more than the native density cannot decimate.
+                src_faces, src_area, src_density = self._mesh_stats(chunk.model)
+                default_density = str(int(src_density)) if src_density else "1000"
+                prompt = "Target polygon density for LOD0 (polygons per m² of mesh surface):"
+                if src_density:
+                    prompt = (
+                        f"Current mesh: {src_faces:,} faces over {src_area:,.0f} m² surface "
+                        f"(~{src_density:,.0f} poly/m²).\n"
+                        "Enter a LOWER value to reduce the mesh — a higher value cannot "
+                        "add detail and will leave the mesh unchanged.\n\n"
+                    ) + prompt
+
+                density_str = ps.app.getString(prompt, default_density)
                 if not density_str:
                     return
                 target_density = float(str(density_str).replace(",", "."))
                 if target_density <= 0:
                     raise Exception("Polygon density must be > 0.")
 
+                # Decimate a COPY so the original full-resolution mesh is kept.
                 target_chunk = chunk.copy()
                 target_chunk.label = (chunk.label if chunk.label else "chunk") + "_LOD0"
                 self.doc.chunk = target_chunk
 
                 area_m2 = target_chunk.model.area() if target_chunk.model else 0
-                target_faces = int(max(10000, area_m2 * target_density))
+                cur_faces, _, _ = self._mesh_stats(target_chunk.model)
+                target_faces = int(max(1000, area_m2 * target_density))
 
-                try:
-                    target_chunk.decimateModel(face_count=target_faces)
-                    mode = "decimated"
-                    info = f"LOD0 decimated copy created with target ~{target_faces} faces."
-                except Exception as dec_err:
-                    mode = "copy_no_decimation"
+                if cur_faces and target_faces >= cur_faces:
+                    # Decimation only ever removes faces; a target at/above the
+                    # current count is a silent no-op in Metashape. Say so.
+                    mode = "no_decimation_target_above_current"
                     info = (
-                        "LOD0 copy created, but decimation was not applied by Metashape API.\n"
-                        f"Reason: {str(dec_err)}"
+                        f"No decimation performed: the requested ~{target_faces:,} faces "
+                        f"({target_density:,.0f} poly/m²) is at or above the current "
+                        f"{cur_faces:,} faces (~{src_density:,.0f} poly/m²).\n"
+                        "Re-run STEP1 with a LOWER poly/m² to actually reduce LOD0.\n"
+                        f"Full-resolution mesh preserved in chunk '{chunk.label}'."
                     )
+                else:
+                    try:
+                        target_chunk.decimateModel(face_count=target_faces)
+                        mode = "decimated"
+                        info = (
+                            f"LOD0 decimated copy created (~{target_faces:,} target faces, "
+                            f"{target_density:,.0f} poly/m²).\n"
+                            f"Full-resolution mesh preserved in chunk '{chunk.label}'."
+                        )
+                    except Exception as dec_err:
+                        mode = "copy_no_decimation"
+                        info = (
+                            "LOD0 copy created, but decimation was not applied by Metashape API.\n"
+                            f"Full-resolution mesh preserved in chunk '{chunk.label}'.\n"
+                            f"Reason: {str(dec_err)}"
+                        )
 
             if hasattr(target_chunk, "meta"):
                 target_chunk.meta["3dsc_workflow_lod0"] = "1"
@@ -1242,9 +1315,12 @@ class MetashapeTools:
                 return
 
             chunk = self.doc.chunk
-            if not chunk.model:
+            models = self._extract_models(chunk)
+            if not models:
                 ps.app.messageBox("Error - No mesh model found in the active chunk.")
                 return
+            if not getattr(chunk, "model", None):
+                self._activate_model(chunk, models[0])
 
             panel = self._show_step3_options_dialog(has_tiled_model=bool(chunk.tiled_model))
             if not panel:
