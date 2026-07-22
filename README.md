@@ -6,24 +6,29 @@
 
 With these scripts you can:
 
-1. Import 3D models (single, multiple, tiled) with or without coordinate shifts
-2. Apply intelligent texturization based on model area (with regular and 200m² limit options)
-3. Export models in various formats with coordinate systems preserved
-4. Generate Level of Detail (LOD) models for visualization optimization
-5. ~~Import camera positions from iPad's 3D Scanner App~~ *(experimental - currently disabled)*
+1. Load a **global coordinate shift** once and apply it to every import/export
+2. Import 3D models (single, multiple, tiled) with or without coordinate shifts
+3. Apply intelligent texturization based on model area (with regular and 200m² limit options)
+4. **Cut a giant mesh into blocks directly in Metashape** (tiled-model based)
+5. Run a **guided end-to-end workflow** (prepare LOD0 → cut → texturize → LOD → export)
+6. Export models in various formats with coordinate systems preserved
+7. Export undistorted images of the active chunk
+8. Generate Level of Detail (LOD) models for visualization optimization
+9. ~~Import camera positions from iPad's 3D Scanner App~~ *(experimental - currently disabled)*
 
 ## Installation
 
 1. Download the scripts to a folder on your computer
-2. In Metashape, go to **Tools > Run Script** and select the `3DSC_MS_GUI_FIXED.py` file
+2. In Metashape, go to **Tools > Run Script** and select the `3DSC_MS_GUI.py` file
 3. The **3DSC Metashape Tools** menu will appear in the Metashape interface
 
 ### Single File Solution
 
-**Version 2.1** consolidates all functionality into a single file:
-- **`3DSC_MS_GUI_FIXED.py`** - Main GUI with all tools integrated
+**Version 1.7.0** consolidates all functionality into a single file:
+- **`3DSC_MS_GUI.py`** - Main GUI with all tools integrated
 
 This replaces the previous multiple-script approach for easier management and installation.
+The version number is aligned with the 3DSC Blender extension (`dsc_tools`).
 
 ---
 
@@ -173,8 +178,16 @@ Where:
 
 ## Version History
 
-### Version 2.1 (Current)
-- **Single-file architecture**: Consolidated all tools into `3DSC_MS_GUI_FIXED.py`
+### Version 1.7.0 (Current)
+- **Version alignment**: numbering realigned with the 3DSC Blender extension (`dsc_tools`)
+- **Global Shift menu**: load a coordinate shift once and reuse it across all import/export operations
+- **Guided Workflow menu**: end-to-end pipeline (STEP1 prepare/flag LOD0 → STEP2 cut mesh into blocks → STEP3 texturize → STEP4 generate LODs + normal maps → STEP5 export), preceded by an optional STEP0 global shift
+- **Cut Giant Mesh into Blocks**: segment a large mesh directly in Metashape via tiled models, one chunk per block
+- **Export Undistorted Images**: export undistorted photos of the active chunk
+- Single-file architecture consolidated into `3DSC_MS_GUI.py`
+
+### Version 2.1 (legacy numbering)
+- **Single-file architecture**: Consolidated all tools into `3DSC_MS_GUI.py`
 - **LOCAL coordinate support**: Full support for local coordinates without EPSG
 - **Fixed messageBox errors**: All Metashape API calls corrected
 - **Fixed float parsing**: Handles decimal values in SHIFT.txt
@@ -192,14 +205,14 @@ Where:
 ## File Structure
 
 ### Required File
-- `3DSC_MS_GUI_FIXED.py` - Main script with all functionality
+- `3DSC_MS_GUI.py` - Main script with all functionality
 
 ### Optional Files
 - `SHIFT.txt` - Coordinate transformation file (placed in same folder as models)
 - `README_SHIFT.md` - Detailed SHIFT.txt documentation
 
 ### Legacy Files (Can Be Removed)
-The following individual script files are no longer needed as all functionality is now in `3DSC_MS_GUI_FIXED.py`:
+The following individual script files are no longer needed as all functionality is now in `3DSC_MS_GUI.py`:
 - ~~`import_multiple_models.py`~~
 - ~~`export_multiple_models.py`~~
 - ~~`texturize_it.py`~~
@@ -222,7 +235,7 @@ The following individual script files are no longer needed as all functionality 
 - Latest version handles this automatically
 
 **Error: "messageBox() takes exactly 1 argument (2 given)"**
-- Update to `3DSC_MS_GUI_FIXED.py` (latest version)
+- Update to `3DSC_MS_GUI.py` (latest version)
 
 **Models import with wrong position**
 - Check SHIFT.txt values match your coordinate system
@@ -259,7 +272,7 @@ The following individual script files are no longer needed as all functionality 
 ⚠️ **Currently Disabled** - This feature is experimental and under development.
 
 To enable (advanced users only):
-1. Edit `3DSC_MS_GUI_FIXED.py`
+1. Edit `3DSC_MS_GUI.py`
 2. Uncomment line ~41:
    ```python
    ps.app.addMenuItem(label + "/iPad/Import iPad AR Camera Data (EXPERIMENTAL)", self.import_ipad_cameras)

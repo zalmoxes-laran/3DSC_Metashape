@@ -1,3 +1,8 @@
+# 3DSC for Metashape
+# Version aligned with the 3D Survey Collection (3DSC) Blender extension.
+# See https://www.extendedmatrix.org
+__version__ = "1.7.0"
+
 import Metashape as ps
 import os
 import sys
@@ -37,7 +42,7 @@ class MetashapeTools:
 
         # Aggiungi i sottomenu per ogni gruppo di funzioni
         shift_preview = self.get_global_shift_preview(compact=True)
-        ps.app.addMenuItem(label + "/Shift/Load Global Shift File", self.load_global_shift_file)
+        ps.app.addMenuItem(label + "/Shift/STEP0 - Load Global Shift File (optional)", self.load_global_shift_file)
         ps.app.addMenuItem(label + "/Shift/Current Shift -> " + shift_preview, self.show_global_shift_preview)
         ps.app.addMenuItem(label + "/Shift/Clear Global Shift", self.clear_global_shift)
 
@@ -55,11 +60,11 @@ class MetashapeTools:
         ps.app.addMenuItem(label + "/Export/Workflow Export Blocks (Textured First)", self.export_workflow_blocks_textured)
         ps.app.addMenuItem(label + "/Export/Export Undistorted Images (Active Chunk)", self.export_undistorted_images_active_chunk)
 
-        ps.app.addMenuItem(label + "/Workflow/STEP2 Prepare or Flag LOD0", self.prepare_or_flag_lod0)
-        ps.app.addMenuItem(label + "/Workflow/STEP3 Cut Mesh into Blocks (Options)", self.cut_giant_mesh_into_blocks_with_shift)
-        ps.app.addMenuItem(label + "/Workflow/STEP5 Texturize Workflow Blocks", self.texturize_workflow_blocks)
-        ps.app.addMenuItem(label + "/Workflow/STEP6 Generate LODs + Normal Maps (Experimental)", self.generate_workflow_lods_experimental)
-        ps.app.addMenuItem(label + "/Workflow/STEP7 Export Workflow Blocks", self.export_workflow_blocks_textured)
+        ps.app.addMenuItem(label + "/Workflow/STEP1 Prepare or Flag LOD0", self.prepare_or_flag_lod0)
+        ps.app.addMenuItem(label + "/Workflow/STEP2 Cut Mesh into Blocks (Options)", self.cut_giant_mesh_into_blocks_with_shift)
+        ps.app.addMenuItem(label + "/Workflow/STEP3 Texturize Workflow Blocks", self.texturize_workflow_blocks)
+        ps.app.addMenuItem(label + "/Workflow/STEP4 Generate LODs + Normal Maps (Experimental)", self.generate_workflow_lods_experimental)
+        ps.app.addMenuItem(label + "/Workflow/STEP5 Export Workflow Blocks", self.export_workflow_blocks_textured)
 
         ps.app.addMenuItem(label + "/Utility/Rename Chunks", self.rename_chunks)
         ps.app.addMenuItem(label + "/Utility/LOD Generator", self.lod_generator)
@@ -262,7 +267,7 @@ class MetashapeTools:
         result = {}
 
         root = tk.Tk()
-        root.title("3DSC STEP3/STEP4 - Cut Mesh Options")
+        root.title("3DSC STEP2 - Cut Mesh Options")
         root.resizable(False, False)
         root.geometry("820x420")
         root.lift()
@@ -293,7 +298,7 @@ class MetashapeTools:
 
         ttk.Checkbutton(
             frame,
-            text="Run STEP2 now (prepare/flag LOD0 before cut)",
+            text="Run STEP1 now (prepare/flag LOD0 before cut)",
             variable=run_step2_var
         ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
@@ -311,13 +316,13 @@ class MetashapeTools:
 
         ttk.Checkbutton(
             frame,
-            text="Export temporary PNG textures during STEP3 (slower)",
+            text="Export temporary PNG textures during STEP2 (slower)",
             variable=export_temp_textures_var
         ).grid(row=6, column=0, columnspan=3, sticky="w")
 
         ttk.Checkbutton(
             frame,
-            text="Delete temporary STEP3 files after STEP4 import",
+            text="Delete temporary files after block import",
             variable=cleanup_temp_files_var
         ).grid(row=7, column=0, columnspan=3, sticky="w")
 
@@ -327,13 +332,13 @@ class MetashapeTools:
             variable=rebuild_tiled_var
         ).grid(row=8, column=0, columnspan=3, sticky="w", pady=(0, 8))
 
-        ttk.Label(frame, text="STEP3 output folder:").grid(row=9, column=0, sticky="w")
+        ttk.Label(frame, text="STEP2 output folder:").grid(row=9, column=0, sticky="w")
         folder_entry = ttk.Entry(frame, textvariable=export_root_var, width=70)
         folder_entry.grid(row=10, column=0, columnspan=2, sticky="we", pady=(2, 0))
 
         def browse_output_folder():
             selected = filedialog.askdirectory(
-                title="Select STEP3 output folder",
+                title="Select STEP2 output folder",
                 initialdir=export_root_var.get() if export_root_var.get() else os.getcwd()
             )
             if selected:
@@ -353,7 +358,7 @@ class MetashapeTools:
                     raise ValueError("Block area must be > 0.")
                 out_dir = export_root_var.get().strip()
                 if not out_dir:
-                    raise ValueError("Select a STEP3 output folder.")
+                    raise ValueError("Select a STEP2 output folder.")
                 result.update(
                     {
                         "target_area_m2": area_value,
@@ -377,7 +382,7 @@ class MetashapeTools:
         btn_row = ttk.Frame(frame)
         btn_row.grid(row=12, column=0, columnspan=3, sticky="e", pady=(14, 0))
         ttk.Button(btn_row, text="Cancel", command=on_cancel).pack(side="right")
-        ttk.Button(btn_row, text="Run STEP3", command=on_ok).pack(side="right", padx=(0, 8))
+        ttk.Button(btn_row, text="Run STEP2", command=on_ok).pack(side="right", padx=(0, 8))
 
         root.protocol("WM_DELETE_WINDOW", on_cancel)
         root.mainloop()
@@ -387,7 +392,7 @@ class MetashapeTools:
         result = {}
 
         root = tk.Tk()
-        root.title("3DSC STEP7 - Export Workflow Blocks")
+        root.title("3DSC STEP5 - Export Workflow Blocks")
         root.resizable(False, False)
         root.geometry("820x300")
         root.lift()
@@ -403,13 +408,13 @@ class MetashapeTools:
         export_folder_var = tk.StringVar(value=default_export)
         shift_file_var = tk.StringVar(value="")
 
-        ttk.Label(frame, text="Workflow STEP7 Export", font=("Arial", 12, "bold")).grid(row=0, column=0, sticky="w")
+        ttk.Label(frame, text="Workflow STEP5 Export", font=("Arial", 12, "bold")).grid(row=0, column=0, sticky="w")
         ttk.Label(frame, text="Export folder:").grid(row=1, column=0, sticky="w", pady=(8, 0))
         ttk.Entry(frame, textvariable=export_folder_var, width=70).grid(row=2, column=0, columnspan=2, sticky="we", pady=(2, 0))
 
         def browse_export_folder():
             selected = filedialog.askdirectory(
-                title="Select STEP7 export folder",
+                title="Select STEP5 export folder",
                 initialdir=export_folder_var.get() if export_folder_var.get() else os.getcwd()
             )
             if selected:
@@ -438,7 +443,7 @@ class MetashapeTools:
             shift_entry.grid(row=6, column=0, columnspan=2, sticky="we", pady=(2, 0))
 
             def browse_shift_file():
-                selected = ps.app.getOpenFileName("Select shift.txt file for STEP7")
+                selected = ps.app.getOpenFileName("Select shift.txt file for STEP5")
                 if selected:
                     shift_file_var.set(selected)
 
@@ -485,7 +490,7 @@ class MetashapeTools:
         btn_row = ttk.Frame(frame)
         btn_row.grid(row=8, column=0, columnspan=3, sticky="e", pady=(14, 0))
         ttk.Button(btn_row, text="Cancel", command=on_cancel).pack(side="right")
-        ttk.Button(btn_row, text="Run STEP7 Export", command=on_ok).pack(side="right", padx=(0, 8))
+        ttk.Button(btn_row, text="Run STEP5 Export", command=on_ok).pack(side="right", padx=(0, 8))
 
         root.protocol("WM_DELETE_WINDOW", on_cancel)
         root.mainloop()
@@ -754,7 +759,7 @@ class MetashapeTools:
                 return
 
             create_decimated_copy = ps.app.getBool(
-                "STEP2 - Create an optional LOD0 decimated copy?\n"
+                "STEP1 - Create an optional LOD0 decimated copy?\n"
                 "(No = use current giant mesh as LOD0)"
             )
 
@@ -798,7 +803,7 @@ class MetashapeTools:
             self.workflow_state["cut_source_chunk_key"] = self._chunk_key(target_chunk)
             self._set_chunk_textured_flag(target_chunk, False)
 
-            ps.app.messageBox("STEP2 completed.\n" + info)
+            ps.app.messageBox("STEP1 completed.\n" + info)
 
         except Exception as e:
             ps.app.messageBox(f"Error: An error occurred: {str(e)}")
@@ -806,7 +811,7 @@ class MetashapeTools:
     def texturize_workflow_blocks(self):
         try:
             if not self.workflow_state.get("cut_blocks"):
-                ps.app.messageBox("No workflow blocks found. Run STEP3 first.")
+                ps.app.messageBox("No workflow blocks found. Run STEP2 first.")
                 return
 
             mode = self.workflow_state.get("cut_mode")
@@ -819,23 +824,23 @@ class MetashapeTools:
                     chunks = [source_chunk]
 
             if not chunks:
-                ps.app.messageBox("No target chunks available for STEP5 texturing.")
+                ps.app.messageBox("No target chunks available for STEP3 texturing.")
                 return
 
-            processed = self._texturize_chunk_list(chunks, max_area=None, progress_title="Workflow STEP5")
+            processed = self._texturize_chunk_list(chunks, max_area=None, progress_title="Workflow STEP3")
             ps.app.update()
-            ps.app.messageBox(f"STEP5 completed. Textured models: {processed}.")
+            ps.app.messageBox(f"STEP3 completed. Textured models: {processed}.")
         except Exception as e:
             ps.app.messageBox(f"Error: An error occurred: {str(e)}")
 
     def generate_workflow_lods_experimental(self):
         try:
             if not self.workflow_state.get("cut_blocks"):
-                ps.app.messageBox("No workflow blocks found. Run STEP3 first.")
+                ps.app.messageBox("No workflow blocks found. Run STEP2 first.")
                 return
 
-            ratio1_str = ps.app.getString("STEP6 - LOD1 decimation ratio (0..1):", "0.5")
-            ratio2_str = ps.app.getString("STEP6 - LOD2 decimation ratio (0..1):", "0.25")
+            ratio1_str = ps.app.getString("STEP4 - LOD1 decimation ratio (0..1):", "0.5")
+            ratio2_str = ps.app.getString("STEP4 - LOD2 decimation ratio (0..1):", "0.25")
             if not ratio1_str or not ratio2_str:
                 return
 
@@ -857,7 +862,7 @@ class MetashapeTools:
                     source_chunks = [source_chunk]
 
             if not source_chunks:
-                raise Exception("No source chunk available for STEP6.")
+                raise Exception("No source chunk available for STEP4.")
 
             created = 0
             for source_chunk in source_chunks:
@@ -877,20 +882,20 @@ class MetashapeTools:
                         except Exception:
                             lod_chunk.decimateModel(face_count=face_count)
                     except Exception as dec_err:
-                        print(f"STEP6 warning - decimation failed for {lod_chunk.label}: {str(dec_err)}")
+                        print(f"STEP4 warning - decimation failed for {lod_chunk.label}: {str(dec_err)}")
 
                     if build_normal_maps:
                         try:
                             lod_chunk.buildNormalMap()
                         except Exception as nm_err:
-                            print(f"STEP6 warning - normal map not generated for {lod_chunk.label}: {str(nm_err)}")
+                            print(f"STEP4 warning - normal map not generated for {lod_chunk.label}: {str(nm_err)}")
 
                     self._set_chunk_textured_flag(lod_chunk, self._is_chunk_textured(source_chunk))
                     created += 1
                     ps.app.update()
 
             ps.app.messageBox(
-                f"STEP6 completed (experimental). Created {created} LOD chunks.\n"
+                f"STEP4 completed (experimental). Created {created} LOD chunks.\n"
                 "Normal map and border preservation depend on the Metashape API version."
             )
 
@@ -900,7 +905,7 @@ class MetashapeTools:
     def export_workflow_blocks_textured(self):
         try:
             if not self.workflow_state.get("cut_blocks"):
-                ps.app.messageBox("No workflow blocks found. Run STEP3 first.")
+                ps.app.messageBox("No workflow blocks found. Run STEP2 first.")
                 return
 
             panel = self._show_step7_options_dialog()
@@ -933,12 +938,12 @@ class MetashapeTools:
             if mode == "multi_chunk":
                 chunks = self._get_workflow_chunks()
                 if not chunks:
-                    ps.app.messageBox("No workflow chunks found. Run STEP3 again.")
+                    ps.app.messageBox("No workflow chunks found. Run STEP2 again.")
                     return
 
                 for chunk in chunks:
                     if not self._is_chunk_textured(chunk):
-                        raise Exception(f"Chunk '{chunk.label}' is not marked as textured. Run STEP5 first.")
+                        raise Exception(f"Chunk '{chunk.label}' is not marked as textured. Run STEP3 first.")
                     if not chunk.model:
                         continue
 
@@ -963,9 +968,9 @@ class MetashapeTools:
                 if chunk is None:
                     chunk = self.doc.chunk
                 if chunk is None or not chunk.model:
-                    raise Exception("No chunk/model available for STEP7 export.")
+                    raise Exception("No chunk/model available for STEP5 export.")
                 if not self._is_chunk_textured(chunk):
-                    raise Exception("Current workflow chunk is not marked as textured. Run STEP5 first.")
+                    raise Exception("Current workflow chunk is not marked as textured. Run STEP3 first.")
 
                 models = self._extract_models(chunk)
                 block_defs = self.workflow_state.get("cut_blocks", [])
@@ -1013,7 +1018,7 @@ class MetashapeTools:
                 with open(os.path.join(export_folder, "shift.txt"), "w", encoding="utf-8") as f:
                     f.write(shift_line + "\n")
 
-            ps.app.messageBox(f"STEP7 completed. Exported meshes: {exported}.")
+            ps.app.messageBox(f"STEP5 completed. Exported meshes: {exported}.")
         except Exception as e:
             ps.app.messageBox(f"Error: An error occurred: {str(e)}")
     
@@ -1344,7 +1349,7 @@ class MetashapeTools:
                 if len(cut_blocks) > 1 and len(new_models) <= 1:
                     same_chunk_warning = (
                         "Metashape API may not support robust multi-model management in one chunk in this version. "
-                        "Use STEP4 multi-chunk mode for full control on naming/texturing/export."
+                        "Use the multi-chunk output mode for full control on naming/texturing/export."
                     )
                 self._set_chunk_textured_flag(chunk, False)
 
@@ -1360,14 +1365,14 @@ class MetashapeTools:
             self.workflow_state["cut_source_chunk_key"] = self._chunk_key(chunk)
 
             msg = (
-                f"STEP3-4 completed.\n"
+                f"STEP2 completed.\n"
                 f"Blocks created: {len(cut_blocks)}\n"
                 f"Output mode: {'multi-chunk' if output_multi_chunks else 'same-chunk'}\n"
                 f"Blocks folder: {blocks_folder}\n\n"
-                f"Next: run STEP5 texturing, then STEP7 export."
+                f"Next: run STEP3 texturing, then STEP5 export."
             )
             if texture_errors > 0:
-                msg += f"\nNotice: {texture_errors} block textures were not exported in STEP3."
+                msg += f"\nNotice: {texture_errors} block textures were not exported in STEP2."
             if same_chunk_warning:
                 msg += f"\nWarning: {same_chunk_warning}"
             ps.app.messageBox(msg)
