@@ -262,122 +262,89 @@ class MetashapeTools:
         density = (faces / area) if (faces and area) else None
         return faces, area, density
 
-    def _obj_has_faces(self, path):
-        """Cheap check that an exported OBJ actually contains geometry."""
-        try:
-            with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                for line in f:
-                    if line.startswith("f "):
-                        return True
-        except Exception:
-            return False
-        return False
+    def _model_format_for(self, path):
+        """Pick a Metashape ModelFormat from a file extension."""
+        ext = os.path.splitext(path)[1].lower()
+        MF = ps.ModelFormat
+        return {
+            ".obj": MF.ModelFormatOBJ,
+            ".ply": MF.ModelFormatPLY,
+            ".dae": MF.ModelFormatCOLLADA,
+        }.get(ext, MF.ModelFormatOBJ)
 
-    def _export_mesh_blocks_by_grid(self, chunk, target_area_m2, blocks_folder,
-                                    grid_naming, max_blocks=4000):
-        """Cut the active mesh into spatial blocks on a regular XY grid.
+    def _scan_files(self, folder):
+        found = set()
+        for root, _dirs, files in os.walk(folder):
+            for fn in files:
+                found.add(os.path.join(root, fn))
+        return found
 
-        Mirrors the 3DSC Blender "Cutter": square footprint cells of side
-        sqrt(area), full height. Each cell is produced by setting the chunk
-        REGION to the cell's bounding box and exporting the model with
-        ``clip_to_boundary=True`` (Metashape clips the mesh to the region).
-        Returns a list of ``{index, name, obj_path, png_path}`` for the
-        non-empty cells only. The original region is always restored.
+    def _build_block_model_and_collect(self, chunk, target_area_m2, blocks_folder):
+        """Build a Metashape **Block Model** (mesh built already split into
+        separate spatial blocks) and collect the exported block meshes.
+
+        Uses ``chunk.buildModel(split_in_blocks=True, blocks_size=<side_m>,
+        export_blocks=True, output_folder=...)``. ``blocks_size`` is in CRS
+        units (metres) = the block side, so side = sqrt(area). This is the
+        native equivalent of the 3DSC Blender "Cutter" and — unlike clipping an
+        existing mesh — actually produces distinct spatial pieces, because the
+        split happens at build time.
+
+        Tries ``source_data=ModelData`` first (re-tile the existing LOD0 mesh,
+        fast), falling back to ``DepthMapsData`` (rebuild from depth maps).
+        Returns ``(cut_blocks, produced_files, source_used)``.
         """
-        model = chunk.model
-        if model is None:
-            raise Exception("No active mesh model to cut.")
-
-        # Remember the current region, then fit it to the model.
-        original_region = chunk.region
-        try:
-            chunk.resetRegion()
-        except Exception:
-            pass
-        base = chunk.region
-        C, S, R = base.center, base.size, base.rot
-
         side = max(0.1, math.sqrt(max(0.01, target_area_m2)))
-        nx = max(1, int(math.ceil(S.x / side)))
-        ny = max(1, int(math.ceil(S.y / side)))
-        if nx * ny > max_blocks:
-            chunk.region = original_region
-            raise Exception(
-                f"Block area {target_area_m2:g} m² would create {nx * ny} blocks "
-                f"(> {max_blocks}). Increase the block plan area and retry."
-            )
-        cell_x = S.x / nx
-        cell_y = S.y / ny
+        before = self._scan_files(blocks_folder)
+
+        sources = []
+        DS = getattr(ps, "DataSource", None)
+        if DS is not None and hasattr(DS, "ModelData"):
+            sources.append(("ModelData", DS.ModelData))
+        if DS is not None and hasattr(DS, "DepthMapsData"):
+            sources.append(("DepthMapsData", DS.DepthMapsData))
+        if not sources:
+            sources = [("default", None)]
+
+        last_err = None
+        source_used = None
+        for name, src in sources:
+            try:
+                kwargs = dict(
+                    surface_type=ps.SurfaceType.Arbitrary,
+                    interpolation=ps.Interpolation.EnabledInterpolation,
+                    face_count=ps.FaceCount.HighFaceCount,
+                    split_in_blocks=True,
+                    blocks_size=float(side),
+                    export_blocks=True,
+                    output_folder=blocks_folder,
+                    build_texture=False,
+                    replace_asset=False,
+                )
+                if src is not None:
+                    kwargs["source_data"] = src
+                chunk.buildModel(**kwargs)
+                source_used = name
+                break
+            except Exception as e:
+                last_err = e
+                continue
+        if source_used is None:
+            raise Exception(f"Block model build failed: {str(last_err)}")
+
+        ps.app.update()
+        produced = sorted(self._scan_files(blocks_folder) - before)
+        mesh_files = [p for p in produced if p.lower().endswith((".obj", ".ply"))]
 
         cut_blocks = []
-        index = 0
-        clip_supported = True
-        for j in range(ny):
-            for i in range(nx):
-                dx = -S.x / 2.0 + (i + 0.5) * cell_x
-                dy = -S.y / 2.0 + (j + 0.5) * cell_y
-                offset = R * ps.Vector([dx, dy, 0.0])
-                reg = ps.Region()
-                reg.center = ps.Vector([C.x + offset.x, C.y + offset.y, C.z + offset.z])
-                reg.size = ps.Vector([cell_x, cell_y, S.z])
-                reg.rot = R
-                chunk.region = reg
-
-                if grid_naming:
-                    block_name = f"block_x{i + 1:03d}_y{j + 1:03d}"
-                else:
-                    block_name = f"block_{index:04d}"
-                obj_path = os.path.join(blocks_folder, block_name + ".obj")
-
-                try:
-                    chunk.exportModel(
-                        path=obj_path,
-                        format=ps.ModelFormat.ModelFormatOBJ,
-                        clip_to_boundary=True,
-                        save_texture=False,
-                        save_uv=False,
-                        save_normals=True,
-                        save_colors=False,
-                    )
-                except TypeError:
-                    # This build's exportModel has no clip_to_boundary → no
-                    # reliable spatial cut. Abort cleanly.
-                    clip_supported = False
-                    break
-                except Exception:
-                    index += 1
-                    continue
-
-                if self._obj_has_faces(obj_path):
-                    cut_blocks.append({
-                        "index": index,
-                        "name": block_name,
-                        "obj_path": obj_path,
-                        "png_path": None,
-                    })
-                elif os.path.exists(obj_path):
-                    try:
-                        os.remove(obj_path)   # drop empty cells
-                    except Exception:
-                        pass
-                index += 1
-                ps.app.update()
-            if not clip_supported:
-                break
-
-        # Always restore the region the user started with.
-        try:
-            chunk.region = original_region
-        except Exception:
-            pass
-
-        if not clip_supported:
-            raise Exception(
-                "This Metashape build does not accept clip_to_boundary in "
-                "exportModel, so in-Metashape spatial cutting is unavailable. "
-                "Segment the mesh in Blender (3DSC Segmentation) instead."
-            )
-        return cut_blocks
+        for idx, path in enumerate(mesh_files):
+            cut_blocks.append({
+                "index": idx,
+                "name": os.path.splitext(os.path.basename(path))[0],
+                "obj_path": path,
+                "png_path": None,
+            })
+        return cut_blocks, produced, source_used
 
     def _get_workflow_chunks(self):
         chunks = []
@@ -1271,8 +1238,6 @@ class MetashapeTools:
 
             target_area_m2 = panel["target_area_m2"]
             output_multi_chunks = panel["output_multi_chunks"]
-            grid_naming = panel["grid_naming"]
-            cleanup_temp_files = panel["cleanup_temp_files"]
             export_root = panel["export_root"]
 
             chunk_label = chunk.label if chunk.label else "active_chunk"
@@ -1280,81 +1245,70 @@ class MetashapeTools:
             blocks_folder = os.path.join(export_root, safe_label + "_workflow_blocks")
             os.makedirs(blocks_folder, exist_ok=True)
 
-            texture_errors = 0
-            # Real spatial cut: one square-footprint block per XY grid cell,
-            # clipped from the mesh via the chunk region (mirrors the 3DSC
-            # Blender "Cutter"). No Metashape tiled model is built.
-            cut_blocks = self._export_mesh_blocks_by_grid(
-                chunk, target_area_m2, blocks_folder, grid_naming
+            # Native spatial cut: Metashape Block Model builds the mesh already
+            # split into separate spatial blocks (split happens at build time,
+            # not by clipping an existing mesh). Mirrors the 3DSC Blender
+            # "Cutter". blocks_size = sqrt(area) in metres.
+            cut_blocks, produced, source_used = self._build_block_model_and_collect(
+                chunk, target_area_m2, blocks_folder
             )
             if not cut_blocks:
+                sample = "\n".join(os.path.basename(p) for p in produced[:30]) or "(no files)"
                 raise Exception(
-                    "No non-empty blocks were produced. Check that the active mesh "
-                    "has geometry and that the block area is reasonable."
+                    "Block model built (source: %s) but no .obj/.ply block meshes "
+                    "were found. Files produced:\n%s\n\nFolder: %s"
+                    % (source_used, sample, blocks_folder)
                 )
             ps.app.update()
 
             generated_chunk_keys = []
-            same_chunk_warning = None
-
             if output_multi_chunks:
+                # Re-import each block as its own chunk (copies the source chunk
+                # so cameras/depth maps travel with it for STEP3 texturing).
                 for block in cut_blocks:
                     new_chunk = chunk.copy()
                     new_chunk.label = f"{safe_label}_{block['name']}"
                     self._prepare_lightweight_chunk(new_chunk)
-                    new_chunk.importModel(path=block["obj_path"], format=ps.ModelFormat.ModelFormatOBJ)
+                    new_chunk.importModel(
+                        path=block["obj_path"],
+                        format=self._model_format_for(block["obj_path"]),
+                    )
                     self._set_chunk_textured_flag(new_chunk, False)
                     if hasattr(new_chunk, "meta"):
                         new_chunk.meta["3dsc_workflow_block_name"] = block["name"]
                     generated_chunk_keys.append(self._chunk_key(new_chunk))
+                    ps.app.update()
                 self.workflow_state["cut_mode"] = "multi_chunk"
                 self.workflow_state["generated_chunk_keys"] = generated_chunk_keys
             else:
-                self.workflow_state["cut_mode"] = "same_chunk"
+                # Files-only: leave the block meshes on disk (verify them, or
+                # clean/segment further in Blender), no chunk import.
+                self.workflow_state["cut_mode"] = "files_only"
                 self.workflow_state["generated_chunk_keys"] = []
-                existing_models = self._extract_models(chunk)
-                existing_ids = set(id(m) for m in existing_models)
-                for block in cut_blocks:
-                    chunk.importModel(path=block["obj_path"], format=ps.ModelFormat.ModelFormatOBJ)
-                models_after = self._extract_models(chunk)
-                new_models = [m for m in models_after if id(m) not in existing_ids]
-                for i, model in enumerate(new_models):
-                    if i >= len(cut_blocks):
-                        break
-                    try:
-                        model.label = cut_blocks[i]["name"]
-                    except Exception:
-                        pass
-                if len(cut_blocks) > 1 and len(new_models) <= 1:
-                    same_chunk_warning = (
-                        "Metashape API may not support robust multi-model management in one chunk in this version. "
-                        "Use the multi-chunk output mode for full control on naming/texturing/export."
-                    )
-                self._set_chunk_textured_flag(chunk, False)
-
-            if cleanup_temp_files and output_multi_chunks:
-                for block in cut_blocks:
-                    if os.path.exists(block["obj_path"]):
-                        os.remove(block["obj_path"])
-                    if block["png_path"] and os.path.exists(block["png_path"]):
-                        os.remove(block["png_path"])
 
             self.workflow_state["cut_blocks"] = cut_blocks
             self.workflow_state["cut_folder"] = blocks_folder
             self.workflow_state["cut_source_chunk_key"] = self._chunk_key(chunk)
 
-            msg = (
-                f"STEP2 completed.\n"
-                f"Blocks created: {len(cut_blocks)}\n"
-                f"Output mode: {'multi-chunk' if output_multi_chunks else 'same-chunk'}\n"
-                f"Blocks folder: {blocks_folder}\n\n"
-                f"Next: run STEP3 texturing, then STEP5 export."
+            if output_multi_chunks:
+                tail = "Next: run STEP3 texturing, then STEP5 export."
+            else:
+                tail = ("Open a few block files to confirm they are distinct spatial "
+                        "pieces, then re-run with 'one chunk per block' (or clean them "
+                        "in Blender first).")
+            ps.app.messageBox(
+                "STEP2 completed (Block Model, source: %s).\n"
+                "Blocks produced: %d\n"
+                "Output mode: %s\n"
+                "Folder: %s\n\n%s"
+                % (
+                    source_used,
+                    len(cut_blocks),
+                    "one chunk per block" if output_multi_chunks else "files only (no import)",
+                    blocks_folder,
+                    tail,
+                )
             )
-            if texture_errors > 0:
-                msg += f"\nNotice: {texture_errors} block textures were not exported in STEP2."
-            if same_chunk_warning:
-                msg += f"\nWarning: {same_chunk_warning}"
-            ps.app.messageBox(msg)
 
         except Exception as e:
             ps.app.messageBox(f"Error: An error occurred: {str(e)}")
