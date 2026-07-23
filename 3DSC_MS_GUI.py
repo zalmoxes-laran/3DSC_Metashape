@@ -8,8 +8,6 @@ import os
 import sys
 import json
 import math
-import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
 
 class MetashapeTools:
     def __init__(self):
@@ -264,22 +262,122 @@ class MetashapeTools:
         density = (faces / area) if (faces and area) else None
         return faces, area, density
 
-    def _build_tiled_model_with_area_hint(self, chunk, target_area_m2):
-        side_len = max(0.5, math.sqrt(target_area_m2))
-        last_error = None
-        attempts = [
-            {"tile_size": side_len},
-            {"tile_size": int(max(64, side_len * 100))},
-            {},
-        ]
-        for kwargs in attempts:
-            try:
-                chunk.buildTiledModel(**kwargs)
-                return side_len
-            except Exception as e:
-                last_error = e
-                continue
-        raise Exception(f"Unable to build tiled model: {str(last_error)}")
+    def _obj_has_faces(self, path):
+        """Cheap check that an exported OBJ actually contains geometry."""
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    if line.startswith("f "):
+                        return True
+        except Exception:
+            return False
+        return False
+
+    def _export_mesh_blocks_by_grid(self, chunk, target_area_m2, blocks_folder,
+                                    grid_naming, max_blocks=4000):
+        """Cut the active mesh into spatial blocks on a regular XY grid.
+
+        Mirrors the 3DSC Blender "Cutter": square footprint cells of side
+        sqrt(area), full height. Each cell is produced by setting the chunk
+        REGION to the cell's bounding box and exporting the model with
+        ``clip_to_boundary=True`` (Metashape clips the mesh to the region).
+        Returns a list of ``{index, name, obj_path, png_path}`` for the
+        non-empty cells only. The original region is always restored.
+        """
+        model = chunk.model
+        if model is None:
+            raise Exception("No active mesh model to cut.")
+
+        # Remember the current region, then fit it to the model.
+        original_region = chunk.region
+        try:
+            chunk.resetRegion()
+        except Exception:
+            pass
+        base = chunk.region
+        C, S, R = base.center, base.size, base.rot
+
+        side = max(0.1, math.sqrt(max(0.01, target_area_m2)))
+        nx = max(1, int(math.ceil(S.x / side)))
+        ny = max(1, int(math.ceil(S.y / side)))
+        if nx * ny > max_blocks:
+            chunk.region = original_region
+            raise Exception(
+                f"Block area {target_area_m2:g} m² would create {nx * ny} blocks "
+                f"(> {max_blocks}). Increase the block plan area and retry."
+            )
+        cell_x = S.x / nx
+        cell_y = S.y / ny
+
+        cut_blocks = []
+        index = 0
+        clip_supported = True
+        for j in range(ny):
+            for i in range(nx):
+                dx = -S.x / 2.0 + (i + 0.5) * cell_x
+                dy = -S.y / 2.0 + (j + 0.5) * cell_y
+                offset = R * ps.Vector([dx, dy, 0.0])
+                reg = ps.Region()
+                reg.center = ps.Vector([C.x + offset.x, C.y + offset.y, C.z + offset.z])
+                reg.size = ps.Vector([cell_x, cell_y, S.z])
+                reg.rot = R
+                chunk.region = reg
+
+                if grid_naming:
+                    block_name = f"block_x{i + 1:03d}_y{j + 1:03d}"
+                else:
+                    block_name = f"block_{index:04d}"
+                obj_path = os.path.join(blocks_folder, block_name + ".obj")
+
+                try:
+                    chunk.exportModel(
+                        path=obj_path,
+                        format=ps.ModelFormat.ModelFormatOBJ,
+                        clip_to_boundary=True,
+                        save_texture=False,
+                        save_uv=False,
+                        save_normals=True,
+                        save_colors=False,
+                    )
+                except TypeError:
+                    # This build's exportModel has no clip_to_boundary → no
+                    # reliable spatial cut. Abort cleanly.
+                    clip_supported = False
+                    break
+                except Exception:
+                    index += 1
+                    continue
+
+                if self._obj_has_faces(obj_path):
+                    cut_blocks.append({
+                        "index": index,
+                        "name": block_name,
+                        "obj_path": obj_path,
+                        "png_path": None,
+                    })
+                elif os.path.exists(obj_path):
+                    try:
+                        os.remove(obj_path)   # drop empty cells
+                    except Exception:
+                        pass
+                index += 1
+                ps.app.update()
+            if not clip_supported:
+                break
+
+        # Always restore the region the user started with.
+        try:
+            chunk.region = original_region
+        except Exception:
+            pass
+
+        if not clip_supported:
+            raise Exception(
+                "This Metashape build does not accept clip_to_boundary in "
+                "exportModel, so in-Metashape spatial cutting is unavailable. "
+                "Segment the mesh in Blender (3DSC Segmentation) instead."
+            )
+        return cut_blocks
 
     def _get_workflow_chunks(self):
         chunks = []
@@ -289,238 +387,75 @@ class MetashapeTools:
                 chunks.append(chunk)
         return chunks
 
-    def _show_step3_options_dialog(self, has_tiled_model=False):
-        result = {}
-
-        root = tk.Tk()
-        root.title("3DSC STEP2 - Cut Mesh Options")
-        root.resizable(False, False)
-        root.geometry("820x420")
-        root.lift()
-
-        frame = ttk.Frame(root, padding=12)
-        frame.pack(fill="both", expand=True)
-
-        ttk.Label(frame, text="Workflow Cut Options", font=("Arial", 12, "bold")).grid(row=0, column=0, sticky="w")
-        ttk.Label(
-            frame,
-            text="Global Shift: " + self.get_global_shift_preview(compact=False),
-            foreground="#333333"
-        ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(2, 12))
-
-        area_var = tk.StringVar(value="80")
-        run_step2_var = tk.BooleanVar(value=True)
-        output_multi_chunks_var = tk.BooleanVar(value=True)
-        grid_naming_var = tk.BooleanVar(value=True)
-        export_temp_textures_var = tk.BooleanVar(value=False)
-        cleanup_temp_files_var = tk.BooleanVar(value=False)
-        rebuild_tiled_var = tk.BooleanVar(value=True if has_tiled_model else True)
-
-        default_folder = self.workflow_state.get("cut_folder") or os.getcwd()
-        export_root_var = tk.StringVar(value=default_folder)
-
-        ttk.Label(frame, text="Block plan area (m²):").grid(row=2, column=0, sticky="w")
-        ttk.Entry(frame, textvariable=area_var, width=14).grid(row=2, column=1, sticky="w")
-
-        ttk.Checkbutton(
-            frame,
-            text="Run STEP1 now (prepare/flag LOD0 before cut)",
-            variable=run_step2_var
-        ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 0))
-
-        ttk.Checkbutton(
-            frame,
-            text="Output mode: one chunk per block (recommended)",
-            variable=output_multi_chunks_var
-        ).grid(row=4, column=0, columnspan=3, sticky="w")
-
-        ttk.Checkbutton(
-            frame,
-            text="Use grid naming for blocks (x_y)",
-            variable=grid_naming_var
-        ).grid(row=5, column=0, columnspan=3, sticky="w")
-
-        ttk.Checkbutton(
-            frame,
-            text="Export temporary PNG textures during STEP2 (slower)",
-            variable=export_temp_textures_var
-        ).grid(row=6, column=0, columnspan=3, sticky="w")
-
-        ttk.Checkbutton(
-            frame,
-            text="Delete temporary files after block import",
-            variable=cleanup_temp_files_var
-        ).grid(row=7, column=0, columnspan=3, sticky="w")
-
-        ttk.Checkbutton(
-            frame,
-            text="Rebuild tiled model with current area settings",
-            variable=rebuild_tiled_var
-        ).grid(row=8, column=0, columnspan=3, sticky="w", pady=(0, 8))
-
-        ttk.Label(frame, text="STEP2 output folder:").grid(row=9, column=0, sticky="w")
-        folder_entry = ttk.Entry(frame, textvariable=export_root_var, width=70)
-        folder_entry.grid(row=10, column=0, columnspan=2, sticky="we", pady=(2, 0))
-
-        def browse_output_folder():
-            selected = filedialog.askdirectory(
-                title="Select STEP2 output folder",
-                initialdir=export_root_var.get() if export_root_var.get() else os.getcwd()
+    def _show_step3_options_dialog(self):
+        # Native Metashape dialogs ONLY. A tkinter window (tk.Tk + mainloop)
+        # crashes Metashape on macOS, where Tk cannot share the Qt event loop.
+        try:
+            area_str = ps.app.getString(
+                "STEP2 - Block plan area in m² (target size of each block):", "80"
             )
-            if selected:
-                export_root_var.set(selected)
+            if not area_str:
+                return None
+            area_value = float(str(area_str).replace(",", "."))
+            if area_value <= 0:
+                ps.app.messageBox("Block area must be > 0.")
+                return None
 
-        ttk.Button(frame, text="Browse...", command=browse_output_folder).grid(row=10, column=2, padx=(8, 0), sticky="w")
+            run_step1_now = ps.app.getBool(
+                "Run STEP1 now (prepare/flag LOD0) before cutting?"
+            )
+            output_multi_chunks = ps.app.getBool(
+                "Output one chunk per block? (Yes = recommended)"
+            )
 
-        status_var = tk.StringVar(value="")
-        ttk.Label(frame, textvariable=status_var, foreground="#b00020").grid(
-            row=11, column=0, columnspan=3, sticky="w", pady=(8, 0)
-        )
+            out_dir = ps.app.getExistingDirectory("Select STEP2 output folder")
+            if not out_dir:
+                return None
 
-        def on_ok():
-            try:
-                area_value = float(str(area_var.get()).replace(",", "."))
-                if area_value <= 0:
-                    raise ValueError("Block area must be > 0.")
-                out_dir = export_root_var.get().strip()
-                if not out_dir:
-                    raise ValueError("Select a STEP2 output folder.")
-                result.update(
-                    {
-                        "target_area_m2": area_value,
-                        "run_step2_now": bool(run_step2_var.get()),
-                        "output_multi_chunks": bool(output_multi_chunks_var.get()),
-                        "grid_naming": bool(grid_naming_var.get()),
-                        "export_temp_textures": bool(export_temp_textures_var.get()),
-                        "cleanup_temp_files": bool(cleanup_temp_files_var.get()),
-                        "rebuild_tiled_model": bool(rebuild_tiled_var.get()),
-                        "export_root": out_dir,
-                    }
-                )
-                root.destroy()
-            except Exception as e:
-                status_var.set(str(e))
-
-        def on_cancel():
-            result.clear()
-            root.destroy()
-
-        btn_row = ttk.Frame(frame)
-        btn_row.grid(row=12, column=0, columnspan=3, sticky="e", pady=(14, 0))
-        ttk.Button(btn_row, text="Cancel", command=on_cancel).pack(side="right")
-        ttk.Button(btn_row, text="Run STEP2", command=on_ok).pack(side="right", padx=(0, 8))
-
-        root.protocol("WM_DELETE_WINDOW", on_cancel)
-        root.mainloop()
-        return result if result else None
+            # Sensible defaults for the rarely-changed options (previously
+            # checkboxes in the tkinter form).
+            return {
+                "target_area_m2": area_value,
+                "run_step2_now": bool(run_step1_now),
+                "output_multi_chunks": bool(output_multi_chunks),
+                "grid_naming": True,
+                "export_temp_textures": False,
+                "cleanup_temp_files": False,
+                "rebuild_tiled_model": True,
+                "export_root": out_dir,
+            }
+        except Exception as e:
+            ps.app.messageBox(f"Error - STEP2 options: {str(e)}")
+            return None
 
     def _show_step7_options_dialog(self):
-        result = {}
+        # Native Metashape dialogs ONLY (see note in _show_step3_options_dialog).
+        try:
+            out_dir = ps.app.getExistingDirectory("Select STEP5 export folder")
+            if not out_dir:
+                return None
 
-        root = tk.Tk()
-        root.title("3DSC STEP5 - Export Workflow Blocks")
-        root.resizable(False, False)
-        root.geometry("820x300")
-        root.lift()
+            has_global_shift = self.global_shift_vector is not None
+            use_shift = ps.app.getBool("Apply a coordinate shift on export?")
 
-        frame = ttk.Frame(root, padding=12)
-        frame.pack(fill="both", expand=True)
+            shift_file = ""
+            if use_shift and not has_global_shift:
+                shift_file = ps.app.getOpenFileName("Select shift.txt file for STEP5")
+                if not shift_file:
+                    use_shift = False
+                    ps.app.messageBox("No shift file selected - exporting without shift.")
 
-        has_global_shift = self.global_shift_vector is not None
-        use_shift_var = tk.BooleanVar(value=True if has_global_shift else False)
-        save_textures_var = tk.BooleanVar(value=True)
+            save_textures = ps.app.getBool("Export UV + textures?")
 
-        default_export = self.workflow_state.get("cut_folder") or os.getcwd()
-        export_folder_var = tk.StringVar(value=default_export)
-        shift_file_var = tk.StringVar(value="")
-
-        ttk.Label(frame, text="Workflow STEP5 Export", font=("Arial", 12, "bold")).grid(row=0, column=0, sticky="w")
-        ttk.Label(frame, text="Export folder:").grid(row=1, column=0, sticky="w", pady=(8, 0))
-        ttk.Entry(frame, textvariable=export_folder_var, width=70).grid(row=2, column=0, columnspan=2, sticky="we", pady=(2, 0))
-
-        def browse_export_folder():
-            selected = filedialog.askdirectory(
-                title="Select STEP5 export folder",
-                initialdir=export_folder_var.get() if export_folder_var.get() else os.getcwd()
-            )
-            if selected:
-                export_folder_var.set(selected)
-
-        ttk.Button(frame, text="Browse...", command=browse_export_folder).grid(row=2, column=2, padx=(8, 0), sticky="w")
-
-        ttk.Checkbutton(frame, text="Use shift for export", variable=use_shift_var).grid(
-            row=3, column=0, columnspan=3, sticky="w", pady=(10, 0)
-        )
-        ttk.Checkbutton(frame, text="Export UV + textures", variable=save_textures_var).grid(
-            row=4, column=0, columnspan=3, sticky="w"
-        )
-
-        if has_global_shift:
-            ttk.Label(
-                frame,
-                text="Using GLOBAL shift: " + self.get_global_shift_preview(compact=False),
-                foreground="#333333"
-            ).grid(row=5, column=0, columnspan=3, sticky="w", pady=(8, 0))
-        else:
-            ttk.Label(frame, text="Shift file (optional, used only if 'Use shift' is enabled):").grid(
-                row=5, column=0, columnspan=3, sticky="w", pady=(8, 0)
-            )
-            shift_entry = ttk.Entry(frame, textvariable=shift_file_var, width=70)
-            shift_entry.grid(row=6, column=0, columnspan=2, sticky="we", pady=(2, 0))
-
-            def browse_shift_file():
-                selected = ps.app.getOpenFileName("Select shift.txt file for STEP5")
-                if selected:
-                    shift_file_var.set(selected)
-
-            ttk.Button(frame, text="Browse...", command=browse_shift_file).grid(row=6, column=2, padx=(8, 0), sticky="w")
-
-            def update_shift_file_state(*_):
-                state = "normal" if use_shift_var.get() else "disabled"
-                shift_entry.configure(state=state)
-
-            use_shift_var.trace_add("write", update_shift_file_state)
-            update_shift_file_state()
-
-        status_var = tk.StringVar(value="")
-        ttk.Label(frame, textvariable=status_var, foreground="#b00020").grid(
-            row=7, column=0, columnspan=3, sticky="w", pady=(10, 0)
-        )
-
-        def on_ok():
-            try:
-                out_dir = export_folder_var.get().strip()
-                if not out_dir:
-                    raise ValueError("Select an export folder.")
-
-                shift_file = shift_file_var.get().strip() if not has_global_shift else ""
-                if use_shift_var.get() and not has_global_shift and not shift_file:
-                    raise ValueError("Select a shift.txt file or disable 'Use shift'.")
-
-                result.update(
-                    {
-                        "export_folder": out_dir,
-                        "use_shift": bool(use_shift_var.get()),
-                        "save_textures": bool(save_textures_var.get()),
-                        "shift_file": shift_file,
-                    }
-                )
-                root.destroy()
-            except Exception as e:
-                status_var.set(str(e))
-
-        def on_cancel():
-            result.clear()
-            root.destroy()
-
-        btn_row = ttk.Frame(frame)
-        btn_row.grid(row=8, column=0, columnspan=3, sticky="e", pady=(14, 0))
-        ttk.Button(btn_row, text="Cancel", command=on_cancel).pack(side="right")
-        ttk.Button(btn_row, text="Run STEP5 Export", command=on_ok).pack(side="right", padx=(0, 8))
-
-        root.protocol("WM_DELETE_WINDOW", on_cancel)
-        root.mainloop()
-        return result if result else None
+            return {
+                "export_folder": out_dir,
+                "use_shift": bool(use_shift),
+                "save_textures": bool(save_textures),
+                "shift_file": shift_file,
+            }
+        except Exception as e:
+            ps.app.messageBox(f"Error - STEP5 options: {str(e)}")
+            return None
 
     # Implementation of existing scripts
     def import_multiple_models(self):
@@ -1322,7 +1257,7 @@ class MetashapeTools:
             if not getattr(chunk, "model", None):
                 self._activate_model(chunk, models[0])
 
-            panel = self._show_step3_options_dialog(has_tiled_model=bool(chunk.tiled_model))
+            panel = self._show_step3_options_dialog()
             if not panel:
                 return
 
@@ -1337,59 +1272,27 @@ class MetashapeTools:
             target_area_m2 = panel["target_area_m2"]
             output_multi_chunks = panel["output_multi_chunks"]
             grid_naming = panel["grid_naming"]
-            export_temp_textures = panel["export_temp_textures"]
             cleanup_temp_files = panel["cleanup_temp_files"]
             export_root = panel["export_root"]
-            rebuild_tiled = panel["rebuild_tiled_model"]
-            if rebuild_tiled or not chunk.tiled_model:
-                self._build_tiled_model_with_area_hint(chunk, target_area_m2)
-                ps.app.update()
-
-            tiled_model = chunk.tiled_model
-            if not tiled_model:
-                raise Exception("Failed to build tiled model from the active chunk model.")
 
             chunk_label = chunk.label if chunk.label else "active_chunk"
             safe_label = "".join(c if c.isalnum() or c in ('_', '-', '.') else '_' for c in chunk_label)
             blocks_folder = os.path.join(export_root, safe_label + "_workflow_blocks")
             os.makedirs(blocks_folder, exist_ok=True)
 
-            tile_format = ps.TileFormat.TileFormatOBJ
-            texture_format = ps.ImageFormat.ImageFormatPNG
             texture_errors = 0
-            cut_blocks = []
-            tile_count = len(tiled_model.tiles)
-            grid_cols = int(max(1, math.ceil(math.sqrt(tile_count))))
-
-            for tile_index in range(tile_count):
-                if grid_naming:
-                    row = (tile_index // grid_cols) + 1
-                    col = (tile_index % grid_cols) + 1
-                    block_name = f"block_x{col:03d}_y{row:03d}"
-                else:
-                    block_name = f"block_{tile_index:04d}"
-
-                obj_path = os.path.join(blocks_folder, block_name + ".obj")
-                png_path = os.path.join(blocks_folder, block_name + ".png")
-                tiled_model.exportTile(tile_index, obj_path, tile_format)
-
-                if export_temp_textures:
-                    try:
-                        tiled_model.exportTileTexture(tile_index, png_path, texture_format)
-                    except Exception:
-                        texture_errors += 1
-                        png_path = None
-                else:
-                    png_path = None
-
-                cut_blocks.append(
-                    {
-                        "index": tile_index,
-                        "name": block_name,
-                        "obj_path": obj_path,
-                        "png_path": png_path,
-                    }
+            # Real spatial cut: one square-footprint block per XY grid cell,
+            # clipped from the mesh via the chunk region (mirrors the 3DSC
+            # Blender "Cutter"). No Metashape tiled model is built.
+            cut_blocks = self._export_mesh_blocks_by_grid(
+                chunk, target_area_m2, blocks_folder, grid_naming
+            )
+            if not cut_blocks:
+                raise Exception(
+                    "No non-empty blocks were produced. Check that the active mesh "
+                    "has geometry and that the block area is reasonable."
                 )
+            ps.app.update()
 
             generated_chunk_keys = []
             same_chunk_warning = None
