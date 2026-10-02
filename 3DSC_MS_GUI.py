@@ -9,8 +9,20 @@ import sys
 import json
 import math
 
+# The modules beside this script (pure Python, no Metashape inside): the checks
+# and names of the STEP2 blocks, and the stamp of every export.
+try:
+    _HERE = os.path.dirname(os.path.abspath(__file__))
+except NameError:  # run from the console with exec(): no __file__
+    _HERE = os.getcwd()
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+import ms_blocks
+import dtc_stamp_ms
+
+
 class MetashapeTools:
-    def __init__(self):
+    def __init__(self, gui=True):
         self.global_shift_file = None
         self.global_shift_line = None
         self.global_shift_vector = None
@@ -24,7 +36,8 @@ class MetashapeTools:
             "cut_source_chunk_key": None,
             "generated_chunk_keys": [],
         }
-        self.init_gui()
+        if gui:
+            self.init_gui()
     
 
     def init_gui(self):
@@ -279,6 +292,45 @@ class MetashapeTools:
                 found.add(os.path.join(root, fn))
         return found
 
+    # ── the stamp of every export (dtc_stamp_ms) ───────────────────────────
+
+    def _ask_operator(self):
+        """«ORCID (optional)»: the declared operator of this export, or None
+        (anonymous). A failing dialog never stops the export."""
+        try:
+            return dtc_stamp_ms.ask_operator(ps.app)
+        except Exception as e:
+            print(f"[3DSC stamp] operator not asked: {e}")
+            return None
+
+    def _stamp(self, chunk, asset, paths, operator, doc=None, **kwargs):
+        """Stamp the files of one export; → results. Never raises: an export
+        does not fail because its stamp could not be written, it says so."""
+        try:
+            results = dtc_stamp_ms.stamp_export(
+                doc or self.doc, chunk, asset, [p for p in paths if p], operator,
+                metashape_version=ps.app.version, **kwargs)
+        except Exception as e:
+            results = [{"state": "failed", "line": f"not stamped: {e}"}]
+        line = dtc_stamp_ms.report_line(results)
+        if line:
+            print(f"[3DSC stamp] {line}")
+        return results
+
+    def _export_files(self, out_path):
+        """The files an exportModel call wrote for ``out_path``: the obj (its mtl
+        and textures are found by the stamp as members of its file set). The
+        quotes Metashape puts around a space-free ``mtllib`` name are taken
+        off first, or dtcstamp 0.1.3 would not find the mtl."""
+        if not os.path.exists(out_path):
+            return []
+        if out_path.lower().endswith(".obj"):
+            try:
+                ms_blocks.unquote_mtllib(out_path)
+            except OSError:
+                pass
+        return [out_path]
+
     def _build_block_model_and_collect(self, chunk, target_area_m2, blocks_folder):
         """Build a Metashape **Block Model** (mesh built already split into
         separate spatial blocks) and collect the exported block meshes.
@@ -375,6 +427,18 @@ class MetashapeTools:
                 "Output one chunk per block? (Yes = recommended)"
             )
 
+            min_faces_str = ps.app.getString(
+                "STEP2 - Minimum faces per tile (0 = keep every tile as it is).\n"
+                "A tile under it is merged into its largest touching neighbour, "
+                "or only flagged:", str(ms_blocks.DEFAULT_MIN_FACES)
+            )
+            min_faces = int(float(str(min_faces_str or "0").replace(",", ".")))
+            small_mode = ms_blocks.SMALL_MERGE
+            if min_faces > 0 and not ps.app.getBool(
+                    "Merge each small tile into its largest touching neighbour?\n"
+                    "(No = keep them, only flag them in the report)"):
+                small_mode = ms_blocks.SMALL_FLAG
+
             out_dir = ps.app.getExistingDirectory("Select STEP2 output folder")
             if not out_dir:
                 return None
@@ -385,6 +449,8 @@ class MetashapeTools:
                 "target_area_m2": area_value,
                 "run_step2_now": bool(run_step1_now),
                 "output_multi_chunks": bool(output_multi_chunks),
+                "min_faces": max(0, min_faces),
+                "small_mode": small_mode,
                 "grid_naming": True,
                 "export_temp_textures": False,
                 "cleanup_temp_files": False,
@@ -909,6 +975,13 @@ class MetashapeTools:
             save_textures = panel["save_textures"]
             mode = self.workflow_state.get("cut_mode")
             exported = 0
+            operator = self._ask_operator()
+            process_id = dtc_stamp_ms.new_process_id()
+            stamp_results = []
+            stamp_cache = {}
+            export_params = {"Export/format": "obj", "Export/save_texture": bool(save_textures),
+                             "Export/shift": dtc_stamp_ms.vector_list(shift) if (use_shift and shift is not None) else None,
+                             "Export/crs": dtc_stamp_ms.crs_text(crs) if use_shift else None}
 
             if mode == "multi_chunk":
                 chunks = self._get_workflow_chunks()
@@ -938,6 +1011,10 @@ class MetashapeTools:
                             kwargs["crs"] = crs
                     chunk.exportModel(**kwargs)
                     exported += 1
+                    stamp_results += self._stamp(
+                        chunk, chunk.model, self._export_files(out_path), operator,
+                        process_id=process_id, parameters=export_params,
+                        georef_export=bool(use_shift), label=chunk.label, cache=stamp_cache)
             else:
                 chunk = self._get_chunk_by_key(self.workflow_state.get("cut_source_chunk_key"))
                 if chunk is None:
@@ -966,6 +1043,10 @@ class MetashapeTools:
                             kwargs["crs"] = crs
                     chunk.exportModel(**kwargs)
                     exported = 1
+                    stamp_results += self._stamp(
+                        chunk, chunk.model, self._export_files(out_path), operator,
+                        process_id=process_id, parameters=export_params,
+                        georef_export=bool(use_shift), cache=stamp_cache)
                 else:
                     for idx, model in enumerate(models):
                         if not self._activate_model(chunk, model):
@@ -988,12 +1069,17 @@ class MetashapeTools:
                                 kwargs["crs"] = crs
                         chunk.exportModel(**kwargs)
                         exported += 1
+                        stamp_results += self._stamp(
+                            chunk, model, self._export_files(out_path), operator,
+                            process_id=process_id, parameters=export_params,
+                            georef_export=bool(use_shift), label=block_name, cache=stamp_cache)
 
             if use_shift and shift_line:
                 with open(os.path.join(export_folder, "shift.txt"), "w", encoding="utf-8") as f:
                     f.write(shift_line + "\n")
 
-            ps.app.messageBox(f"STEP5 completed. Exported meshes: {exported}.")
+            ps.app.messageBox(f"STEP5 completed. Exported meshes: {exported}.\n"
+                              + dtc_stamp_ms.report_line(stamp_results))
         except Exception as e:
             ps.app.messageBox(f"Error: An error occurred: {str(e)}")
     
@@ -1043,6 +1129,10 @@ class MetashapeTools:
             
             # Export each chunk
             number = 0
+            operator = self._ask_operator()
+            process_id = dtc_stamp_ms.new_process_id()
+            stamp_results = []
+            stamp_cache = {}
             for i in range(0, len(self.doc.chunks)):
                 chunk = self.doc.chunks[i]
                 
@@ -1112,11 +1202,19 @@ class MetashapeTools:
                             colors_rgb_8bit=True, 
                             format=ps.ModelFormat.ModelFormatOBJ
                         )
+                    stamp_results += self._stamp(
+                        chunk, chunk.model, self._export_files(ob_fullpath), operator,
+                        process_id=process_id, georef_export=coord_shift, label=chunk.label,
+                        parameters={"Export/format": "obj",
+                                    "Export/shift": dtc_stamp_ms.vector_list(shift_coor) if coord_shift else None,
+                                    "Export/crs": projection_coor},
+                        cache=stamp_cache)
                 
                 number += 1
             
             ps.app.update()
-            ps.app.messageBox(f"Success - Exported {number} models successfully.")
+            ps.app.messageBox(f"Success - Exported {number} models successfully.\n"
+                              + dtc_stamp_ms.report_line(stamp_results))
             
         except Exception as e:
             ps.app.messageBox(f"Error: An error occurred: {str(e)}")
@@ -1144,6 +1242,7 @@ class MetashapeTools:
                 file_name = chunk.label
             
             save_path = os.path.join(save_folder, file_name + ".obj")
+            operator = self._ask_operator()
             
             # Export the model
             if crs and shift_coor:
@@ -1152,8 +1251,15 @@ class MetashapeTools:
                 chunk.exportModel(path=save_path, format=ps.ModelFormat.ModelFormatOBJ, shift=shift_coor)
             else:
                 chunk.exportModel(path=save_path, format=ps.ModelFormat.ModelFormatOBJ)
+            stamp_results = self._stamp(
+                chunk, chunk.model, self._export_files(save_path), operator,
+                georef_export=bool(shift_coor), label=file_name,
+                parameters={"Export/format": "obj",
+                            "Export/shift": dtc_stamp_ms.vector_list(shift_coor) if shift_coor else None,
+                            "Export/crs": dtc_stamp_ms.crs_text(crs)})
             
-            ps.app.messageBox(f"Success - Model exported successfully to {save_path}.")
+            ps.app.messageBox(f"Success - Model exported successfully to {save_path}.\n"
+                              + dtc_stamp_ms.report_line(stamp_results))
             
         except Exception as e:
             ps.app.messageBox(f"Error: An error occurred: {str(e)}")
@@ -1188,6 +1294,10 @@ class MetashapeTools:
                 os.makedirs(export_folder)
             
             # Export tiles
+            operator = self._ask_operator()
+            process_id = dtc_stamp_ms.new_process_id()
+            stamp_results = []
+            stamp_cache = {}
             for tile_index in range(len(tiled_model.tiles)):
                 tile_name = f"tile_{tile_index:04d}"
                 obj_path = os.path.join(export_folder, f"{tile_name}.obj")
@@ -1200,12 +1310,19 @@ class MetashapeTools:
                 
                 # Export the texture
                 tiled_model.exportTileTexture(tile_index, png_path, texture_format)
+                stamp_results += self._stamp(
+                    chunk, tiled_model, [p for p in (obj_path, png_path) if os.path.exists(p)],
+                    operator, process_id=process_id, georef_export=bool(shift),
+                    label=tile_name, cache=stamp_cache,
+                    parameters={"ExportTile/index": tile_index,
+                                "ExportTile/translation": dtc_stamp_ms.vector_list(shift) if shift else None})
 
             if shift_line:
                 with open(os.path.join(export_folder, "shift.txt"), "w", encoding="utf-8") as f:
                     f.write(shift_line + "\n")
             
-            ps.app.messageBox(f"Success - Exported {len(tiled_model.tiles)} tiled models successfully.")
+            ps.app.messageBox(f"Success - Exported {len(tiled_model.tiles)} tiled models successfully.\n"
+                              + dtc_stamp_ms.report_line(stamp_results))
             
         except Exception as e:
             ps.app.messageBox(f"Error: An error occurred: {str(e)}")
@@ -1236,83 +1353,224 @@ class MetashapeTools:
                     chunk = lod_chunk
                     self.doc.chunk = chunk
 
-            target_area_m2 = panel["target_area_m2"]
-            output_multi_chunks = panel["output_multi_chunks"]
-            export_root = panel["export_root"]
+            operator = self._ask_operator()
+            report = self.run_step2(self.doc, chunk, panel, operator)
+            ps.app.messageBox(report["message"])
 
-            chunk_label = chunk.label if chunk.label else "active_chunk"
-            safe_label = "".join(c if c.isalnum() or c in ('_', '-', '.') else '_' for c in chunk_label)
-            blocks_folder = os.path.join(export_root, safe_label + "_workflow_blocks")
-            os.makedirs(blocks_folder, exist_ok=True)
-
-            # Native spatial cut: Metashape Block Model builds the mesh already
-            # split into separate spatial blocks (split happens at build time,
-            # not by clipping an existing mesh). Mirrors the 3DSC Blender
-            # "Cutter". blocks_size = sqrt(area) in metres.
-            cut_blocks, produced, source_used = self._build_block_model_and_collect(
-                chunk, target_area_m2, blocks_folder
-            )
-            if not cut_blocks:
-                sample = "\n".join(os.path.basename(p) for p in produced[:30]) or "(no files)"
-                raise Exception(
-                    "Block model built (source: %s) but no .obj/.ply block meshes "
-                    "were found. Files produced:\n%s\n\nFolder: %s"
-                    % (source_used, sample, blocks_folder)
-                )
-            ps.app.update()
-
-            generated_chunk_keys = []
-            if output_multi_chunks:
-                # Re-import each block as its own chunk (copies the source chunk
-                # so cameras/depth maps travel with it for STEP3 texturing).
-                for block in cut_blocks:
-                    new_chunk = chunk.copy()
-                    new_chunk.label = f"{safe_label}_{block['name']}"
-                    self._prepare_lightweight_chunk(new_chunk)
-                    new_chunk.importModel(
-                        path=block["obj_path"],
-                        format=self._model_format_for(block["obj_path"]),
-                    )
-                    self._set_chunk_textured_flag(new_chunk, False)
-                    if hasattr(new_chunk, "meta"):
-                        new_chunk.meta["3dsc_workflow_block_name"] = block["name"]
-                    generated_chunk_keys.append(self._chunk_key(new_chunk))
-                    ps.app.update()
-                self.workflow_state["cut_mode"] = "multi_chunk"
-                self.workflow_state["generated_chunk_keys"] = generated_chunk_keys
-            else:
-                # Files-only: leave the block meshes on disk (verify them, or
-                # clean/segment further in Blender), no chunk import.
-                self.workflow_state["cut_mode"] = "files_only"
-                self.workflow_state["generated_chunk_keys"] = []
-
-            self.workflow_state["cut_blocks"] = cut_blocks
-            self.workflow_state["cut_folder"] = blocks_folder
-            self.workflow_state["cut_source_chunk_key"] = self._chunk_key(chunk)
-
-            if output_multi_chunks:
-                tail = "Next: run STEP3 texturing, then STEP5 export."
-            else:
-                tail = ("Open a few block files to confirm they are distinct spatial "
-                        "pieces, then re-run with 'one chunk per block' (or clean them "
-                        "in Blender first).")
+        except ms_blocks.BlocksRejected as e:
             ps.app.messageBox(
-                "STEP2 completed (Block Model, source: %s).\n"
-                "Blocks produced: %d\n"
-                "Output mode: %s\n"
-                "Folder: %s\n\n%s"
-                % (
-                    source_used,
-                    len(cut_blocks),
-                    "one chunk per block" if output_multi_chunks else "files only (no import)",
-                    blocks_folder,
-                    tail,
-                )
+                "STEP2 stopped: the blocks are not distinct pieces of the model.\n\n"
+                + "\n".join(p[:400] for p in e.problems)
             )
-
         except Exception as e:
             ps.app.messageBox(f"Error: An error occurred: {str(e)}")
-    
+
+    def run_step2(self, doc, chunk, panel, operator):
+        """STEP2 without dialogs: the Block Model, the check, the small tiles,
+        the grid names, the chunks, the stamps. → a report (dict, with the
+        ``message`` the menu shows). Raises ``ms_blocks.BlocksRejected`` when
+        the blocks are not distinct pieces of the model."""
+        target_area_m2 = panel["target_area_m2"]
+        output_multi_chunks = panel["output_multi_chunks"]
+        export_root = panel["export_root"]
+        min_faces = int(panel.get("min_faces", ms_blocks.DEFAULT_MIN_FACES) or 0)
+        small_mode = panel.get("small_mode", ms_blocks.SMALL_MERGE)
+        side = max(0.1, math.sqrt(max(0.01, target_area_m2)))
+
+        chunk_label = chunk.label if chunk.label else "active_chunk"
+        safe_label = "".join(c if c.isalnum() or c in ('_', '-', '.') else '_' for c in chunk_label)
+        blocks_folder = os.path.join(export_root, safe_label + "_workflow_blocks")
+        os.makedirs(blocks_folder, exist_ok=True)
+
+        source_model = chunk.model
+        source_faces, _, _ = self._mesh_stats(source_model)
+        keys_before = {m.key for m in self._extract_models(chunk)}
+
+        # Native spatial cut: Metashape Block Model builds the mesh already
+        # split into separate spatial blocks (split happens at build time,
+        # not by clipping an existing mesh). Mirrors the 3DSC Blender
+        # "Cutter". blocks_size = sqrt(area) in metres.
+        cut_blocks, produced, source_used = self._build_block_model_and_collect(
+            chunk, target_area_m2, blocks_folder
+        )
+        if not cut_blocks:
+            sample = "\n".join(os.path.basename(p) for p in produced[:30]) or "(no files)"
+            raise Exception(
+                "Block model built (source: %s) but no .obj/.ply block meshes "
+                "were found. Files produced:\n%s\n\nFolder: %s"
+                % (source_used, sample, blocks_folder)
+            )
+        ps.app.update()
+        # the block models Metashape added to the chunk, by their tile name
+        tile_models = {m.label: m for m in self._extract_models(chunk)
+                       if m.key not in keys_before and m.label}
+
+        # 1. the check: distinct pieces, or stop and name the files
+        names = [os.path.basename(b["obj_path"]) for b in cut_blocks
+                 if b["obj_path"].lower().endswith(".obj")]
+        stats = ms_blocks.folder_stats(blocks_folder, names)
+        ms_blocks.assert_blocks(stats, source_faces)
+        produced_count = len(stats)
+
+        # 2. the grid names, from each tile's centre in the grid of the cut —
+        # on the tiles AS CUT: a tile that absorbs a small neighbour keeps the
+        # name of its own cell (its grown bbox may centre in the next one)
+        srs_origin = ms_blocks.read_srs_origin(blocks_folder)
+        mapping = {s["name"]: s["name"] for s in stats}
+        if panel.get("grid_naming", True):
+            origin = ms_blocks.cut_grid_origin(stats, side, srs_origin)
+            mapping = ms_blocks.grid_names(stats, side, origin)
+
+        # 3. the small tiles: merged into a neighbour, or flagged
+        small_plan = {"small": [], "merges": [], "flagged": []}
+        merge_lines = []
+        if min_faces > 0:
+            small_plan = ms_blocks.plan_small_tiles(stats, min_faces, small_mode)
+            if small_plan["merges"]:
+                merge_lines = ms_blocks.apply_small_tiles(blocks_folder, small_plan)
+                gone = {s for s, _ in small_plan["merges"]}
+                stats = ms_blocks.folder_stats(
+                    blocks_folder, [os.path.basename(s["path"]) for s in stats
+                                    if s["name"] not in gone])
+        absorbed_into = {}
+        for small, into in small_plan["merges"]:
+            absorbed_into.setdefault(into, []).append(small)
+
+        if panel.get("grid_naming", True):
+            ms_blocks.rename_tiles(blocks_folder, {s["name"]: mapping[s["name"]] for s in stats})
+            for old, new in mapping.items():
+                model = tile_models.get(old)
+                if model is not None:
+                    try:
+                        model.label = new
+                    except Exception:
+                        pass
+
+        cut_blocks = []
+        for idx, s in enumerate(sorted(stats, key=lambda s: mapping[s["name"]])):
+            new = mapping[s["name"]]
+            cut_blocks.append({
+                "index": idx,
+                "name": new,
+                "source_name": s["name"],
+                "obj_path": os.path.join(blocks_folder, new + ".obj"),
+                "png_path": None,
+                "faces": s["faces"],
+                "merged_from": sorted(absorbed_into.get(s["name"], [])),
+            })
+
+        generated_chunk_keys = []
+        if output_multi_chunks:
+            # Re-import each block as its own chunk (copies the source chunk
+            # so cameras/depth maps travel with it for STEP3 texturing).
+            for block in cut_blocks:
+                new_chunk = chunk.copy()
+                new_chunk.label = f"{safe_label}_{block['name']}"
+                self._prepare_lightweight_chunk(new_chunk)
+                new_chunk.importModel(
+                    path=block["obj_path"],
+                    format=self._model_format_for(block["obj_path"]),
+                )
+                self._set_chunk_textured_flag(new_chunk, False)
+                if hasattr(new_chunk, "meta"):
+                    new_chunk.meta["3dsc_workflow_block_name"] = block["name"]
+                    new_chunk.meta["3dsc_tile_source_name"] = block["source_name"]
+                generated_chunk_keys.append(self._chunk_key(new_chunk))
+                ps.app.update()
+            self.workflow_state["cut_mode"] = "multi_chunk"
+            self.workflow_state["generated_chunk_keys"] = generated_chunk_keys
+        else:
+            # Files-only: leave the block meshes on disk (verify them, or
+            # clean/segment further in Blender), no chunk import.
+            self.workflow_state["cut_mode"] = "files_only"
+            self.workflow_state["generated_chunk_keys"] = []
+
+        self.workflow_state["cut_blocks"] = cut_blocks
+        self.workflow_state["cut_folder"] = blocks_folder
+        self.workflow_state["cut_source_chunk_key"] = self._chunk_key(chunk)
+
+        # 4. the stamps: one act, one process_id for every file of the cut
+        process_id = dtc_stamp_ms.new_process_id()
+        technique = "Metashape Block Model, blocks_size %s m" % ("%.2f" % side).replace(".", ",")
+        common = {
+            "BuildModel/split_in_blocks": True,
+            "BuildModel/blocks_size": float(side),
+            "BuildModel/export_blocks": True,
+            "BuildModel/build_texture": False,
+            "BuildModel/replace_asset": False,
+            "BuildModel/source_data": source_used,
+            "3DSC/target_area_m2": float(target_area_m2),
+            "3DSC/min_faces": min_faces,
+            "3DSC/small_tiles": small_mode if min_faces > 0 else "off",
+            "3DSC/grid_naming": bool(panel.get("grid_naming", True)),
+        }
+        if srs_origin:
+            common["metadata.xml/SRSOrigin"] = list(srs_origin)
+        cache = {}
+        results = []
+        flagged = set(small_plan["flagged"])
+        for block in cut_blocks:
+            params = dict(common)
+            params["3DSC/tile_source_name"] = block["source_name"]
+            if block["merged_from"]:
+                params["3DSC/merged_from"] = block["merged_from"]
+            if block["source_name"] in flagged:
+                params["3DSC/under_min_faces"] = True
+            tile_model = tile_models.get(block["name"]) or tile_models.get(block["source_name"])
+            sources = [tile_models[n] for n in block["merged_from"] if n in tile_models]
+            if source_model is not None:
+                sources.append(source_model)
+            tls = os.path.join(blocks_folder, block["name"] + ".tls")
+            results += self._stamp(
+                chunk, tile_model if tile_model is not None else source_model,
+                [block["obj_path"], tls if os.path.exists(tls) else None], operator,
+                doc=doc, process_id=process_id, dtc_kind=dtc_stamp_ms.KIND_TILING,
+                technique=technique, parameters=params,
+                sources=sources if tile_model is not None else sources[:-1],
+                label=block["name"], measures={block["obj_path"]: {"faces": block["faces"]}},
+                cache=cache)
+        meta_xml = os.path.join(blocks_folder, "metadata.xml")
+        if os.path.exists(meta_xml):
+            results += self._stamp(
+                chunk, source_model, [meta_xml], operator, doc=doc, process_id=process_id,
+                dtc_kind=dtc_stamp_ms.KIND_TILING, technique=technique, parameters=common,
+                label="metadata.xml of the blocks", cache=cache)
+
+        if output_multi_chunks:
+            tail = "Next: run STEP3 texturing, then STEP5 export."
+        else:
+            tail = ("Open a few block files to confirm they are distinct spatial "
+                    "pieces, then re-run with 'one chunk per block' (or clean them "
+                    "in Blender first).")
+        small_line = ""
+        if min_faces > 0:
+            small_line = "Tiles under %d faces: %d (%d merged, %d flagged)\n" % (
+                min_faces, len(small_plan["small"]), len(small_plan["merges"]),
+                len(small_plan["flagged"]))
+        message = (
+            "STEP2 completed (Block Model, source: %s).\n"
+            "Blocks produced: %d, checked distinct; kept: %d\n%s"
+            "Output mode: %s\n"
+            "Folder: %s\n%s\n\n%s"
+            % (
+                source_used,
+                produced_count,
+                len(cut_blocks),
+                small_line,
+                "one chunk per block" if output_multi_chunks else "files only (no import)",
+                blocks_folder,
+                dtc_stamp_ms.report_line(results),
+                tail,
+            )
+        )
+        return {
+            "message": message, "folder": blocks_folder, "source_used": source_used,
+            "source_faces": source_faces, "blocks_size": side, "produced": produced_count,
+            "blocks": cut_blocks, "small_plan": small_plan, "merge_lines": merge_lines,
+            "mapping": mapping, "process_id": process_id, "stamps": results,
+            "tile_models": {k: m.key for k, m in tile_models.items()},
+        }
+
     def export_undistorted_images_active_chunk(self):
         try:
             if self.doc.chunk is None:
@@ -1344,8 +1602,17 @@ class MetashapeTools:
 
             exported = len([cam for cam in chunk.cameras if cam.photo is not None])
             ps.app.update()
+            stamp_results = self._stamp(
+                chunk, None, [export_folder], self._ask_operator(),
+                dtc_kind="transformation", photos=True,
+                technique="Metashape Convert Images (undistort, initial calibration)",
+                parameters={"ConvertImages/use_initial_calibration": True,
+                            "ConvertImages/color_correction": False,
+                            "ConvertImages/merge_planes": False,
+                            "ConvertImages/update_gps_tags": False})
             ps.app.messageBox(
-                f"Success - Exported {exported} undistorted images to {export_folder}."
+                f"Success - Exported {exported} undistorted images to {export_folder}.\n"
+                + dtc_stamp_ms.report_line(stamp_results)
             )
 
         except Exception as e:
@@ -1713,5 +1980,7 @@ class MetashapeTools:
             except:
                 pass
 
-# Create the tool
-tool = MetashapeTools()
+# Create the tool (a headless run sets DSC_MS_HEADLESS and builds its own,
+# with gui=False, to call the same code the menu calls)
+if not os.environ.get("DSC_MS_HEADLESS"):
+    tool = MetashapeTools()

@@ -9,26 +9,41 @@ With these scripts you can:
 1. Load a **global coordinate shift** once and apply it to every import/export
 2. Import 3D models (single, multiple, tiled) with or without coordinate shifts
 3. Apply intelligent texturization based on model area (with regular and 200m² limit options)
-4. **Cut a giant mesh into blocks directly in Metashape** (tiled-model based)
+4. **Cut a giant mesh into blocks directly in Metashape** (Block Model), with a check that stops identical blocks, grid names `block_xNNN_yNNN` and the small edge tiles merged or flagged
 5. Run a **guided end-to-end workflow** (prepare LOD0 → cut → texturize → LOD → export)
 6. Export models in various formats with coordinate systems preserved
 7. Export undistorted images of the active chunk
 8. Generate Level of Detail (LOD) models for visualization optimization
-9. ~~Import camera positions from iPad's 3D Scanner App~~ *(experimental - currently disabled)*
+9. **Stamp every export**: each exported file gets its `<file>.stamp.json` (dtcstamp), read from what Metashape recorded
+10. ~~Import camera positions from iPad's 3D Scanner App~~ *(experimental - currently disabled)*
 
 ## Installation
 
-1. Download the scripts to a folder on your computer
+1. Download the repository to a folder on your computer (keep the files together)
 2. In Metashape, go to **Tools > Run Script** and select the `3DSC_MS_GUI.py` file
 3. The **3DSC Metashape Tools** menu will appear in the Metashape interface
 
-### Single File Solution
+### The files
 
-**Version 1.7.0** consolidates all functionality into a single file:
-- **`3DSC_MS_GUI.py`** - Main GUI with all tools integrated
+`3DSC_MS_GUI.py` is the menu. It imports two modules that must stay **in the same folder**:
+- **`ms_blocks.py`** - the STEP2 blocks read from the files Metashape writes: the check, the grid names, the small tiles
+- **`dtc_stamp_ms.py`** - the stamp of every export, with `vendor/dtcstamp.py` (dtcstamp 0.1.3, Apache 2.0)
 
-This replaces the previous multiple-script approach for easier management and installation.
+Both are pure Python and are tested without Metashape: `python3 -m unittest discover tests`.
 The version number is aligned with the 3DSC Blender extension (`dsc_tools`).
+
+### STEP2 - the blocks
+
+STEP2 builds a Metashape **Block Model** (`buildModel(split_in_blocks=True, export_blocks=True)`) and then, on the files:
+- **stops** when two blocks have the same content (the file without its `mtllib` line), or the same bbox and face count, or when all the blocks add up to more than 1.5 × the faces of the source model. This is what the 0c2559a version produced: 32 copies of the whole model (`exportModel(clip_to_boundary=True)` clips to the boundary *shapes*, not to the region);
+- with **min faces** (2000 by default, 0 = off), merges each smaller tile into its largest touching neighbour, or only flags it. The merged tile's files go into `_absorbed/`, never deleted;
+- **names** each tile `block_xNNN_yNNN` from its centre, in the grid of the cut (side `blocks_size`), counted from the corner of the model; `.obj`, `.mtl`, `.tls` and the `mtllib` line are renamed together, and Metashape's name («Tile 93341-516978») stays in `chunk.meta["3dsc_tile_source_name"]` and in the stamp.
+
+### Stamps
+
+Every export (mesh, blocks, tiles, undistorted images) writes `<file>.stamp.json` beside each file (an OBJ with its MTL and textures is one *file set*). The stamp says what Metashape recorded: the parameters of the operations in the chunk's and the asset's `meta`, the photos by sensor (by their own stamps, or as the tree of their folder), the software. The asset in the project is the master; its address (`psx://<project>#<chunk>/<asset>/<key>`) is private and only goes in the `<file>.hints.json` beside the stamp.
+
+At each export a dialog asks for an **ORCID iD (optional)**: it is checked (ISO 7064 MOD 11-2), remembered for the next export, and written as a declared operator. Left empty, the stamp names no operator: the agent is the software.
 
 ---
 
@@ -184,7 +199,8 @@ Where:
 - **Guided Workflow menu**: end-to-end pipeline (STEP1 prepare/flag LOD0 → STEP2 cut mesh into blocks → STEP3 texturize → STEP4 generate LODs + normal maps → STEP5 export), preceded by an optional STEP0 global shift
 - **Cut Giant Mesh into Blocks**: segment a large mesh directly in Metashape via tiled models, one chunk per block
 - **Export Undistorted Images**: export undistorted photos of the active chunk
-- Single-file architecture consolidated into `3DSC_MS_GUI.py`
+- STEP2 blocks checked (no identical blocks), named `block_xNNN_yNNN`, small tiles merged or flagged (`ms_blocks.py`)
+- Every export stamped with dtcstamp 0.1.3, ORCID optional (`dtc_stamp_ms.py`)
 
 ### Version 2.1 (legacy numbering)
 - **Single-file architecture**: Consolidated all tools into `3DSC_MS_GUI.py`
@@ -204,15 +220,17 @@ Where:
 
 ## File Structure
 
-### Required File
-- `3DSC_MS_GUI.py` - Main script with all functionality
+### Required Files (keep them together)
+- `3DSC_MS_GUI.py` - Main script with the menu
+- `ms_blocks.py` - STEP2 blocks: check, names, small tiles
+- `dtc_stamp_ms.py` + `vendor/dtcstamp.py` - the stamp of every export
 
 ### Optional Files
 - `SHIFT.txt` - Coordinate transformation file (placed in same folder as models)
 - `README_SHIFT.md` - Detailed SHIFT.txt documentation
 
 ### Legacy Files (Can Be Removed)
-The following individual script files are no longer needed as all functionality is now in `3DSC_MS_GUI.py`:
+The following individual script files are no longer needed:
 - ~~`import_multiple_models.py`~~
 - ~~`export_multiple_models.py`~~
 - ~~`texturize_it.py`~~
