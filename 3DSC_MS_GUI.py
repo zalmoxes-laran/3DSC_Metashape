@@ -331,6 +331,22 @@ class MetashapeTools:
                 pass
         return [out_path]
 
+    def _import_block(self, chunk, obj_path, srs_origin):
+        """Import a block file back into ``chunk`` WHERE IT WAS CUT.
+
+        Metashape writes the blocks in a local frame whose origin is the
+        ``<SRSOrigin>`` of the ``metadata.xml`` beside them. Imported without
+        it, a block lands near the CRS origin, far from the cameras, and STEP3
+        textures it with nothing: measured 2 Oct 2026 on San Pietro, 28 pages
+        of 4096² all with one sha256. With the origin as ``shift`` and the
+        chunk's CRS the block is back under its cameras."""
+        kwargs = dict(path=obj_path, format=self._model_format_for(obj_path))
+        if srs_origin:
+            kwargs["shift"] = ps.Vector(list(srs_origin))
+            if getattr(chunk, "crs", None) is not None:
+                kwargs["crs"] = chunk.crs
+        chunk.importModel(**kwargs)
+
     def _build_block_model_and_collect(self, chunk, target_area_m2, blocks_folder):
         """Build a Metashape **Block Model** (mesh built already split into
         separate spatial blocks) and collect the exported block meshes.
@@ -1467,10 +1483,7 @@ class MetashapeTools:
                 new_chunk = chunk.copy()
                 new_chunk.label = f"{safe_label}_{block['name']}"
                 self._prepare_lightweight_chunk(new_chunk)
-                new_chunk.importModel(
-                    path=block["obj_path"],
-                    format=self._model_format_for(block["obj_path"]),
-                )
+                self._import_block(new_chunk, block["obj_path"], srs_origin)
                 self._set_chunk_textured_flag(new_chunk, False)
                 if hasattr(new_chunk, "meta"):
                     new_chunk.meta["3dsc_workflow_block_name"] = block["name"]
