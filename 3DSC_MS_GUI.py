@@ -610,6 +610,13 @@ class MetashapeTools:
         """Bring a group of photos from a chunk of another project into the active
         chunk, with calibration, marker projections and masks (ms_append_gui)."""
         try:
+            # The modules beside this script: found from ms_blocks, which the
+            # menu has already imported, also when Run Script left no __file__.
+            import importlib
+            here = os.path.dirname(os.path.abspath(ms_blocks.__file__))
+            if here not in sys.path:
+                sys.path.insert(0, here)
+            importlib.invalidate_caches()
             import ms_append_gui
             ms_append_gui.run_append_dialog()
         except Exception as e:
