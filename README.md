@@ -14,8 +14,9 @@ With these scripts you can:
 6. Export models in various formats with coordinate systems preserved
 7. Export undistorted images of the active chunk
 8. Generate Level of Detail (LOD) models for visualization optimization
-9. **Stamp every export**: each exported file gets its `<file>.stamp.json` (dtcstamp), read from what Metashape recorded
-10. ~~Import camera positions from iPad's 3D Scanner App~~ *(experimental - currently disabled)*
+9. **Append photos from another project**: bring a camera group, the selected cameras or all of them from a chunk of another Metashape project into the active chunk, as a camera group of its own, with their calibration, marker projections, masks and camera reference
+10. **Stamp every export**: each exported file gets its `<file>.stamp.json` (dtcstamp), read from what Metashape recorded
+11. ~~Import camera positions from iPad's 3D Scanner App~~ *(experimental - currently disabled)*
 
 ## Installation
 
@@ -29,7 +30,9 @@ With these scripts you can:
 - **`ms_blocks.py`** - the STEP2 blocks read from the files Metashape writes: the check, the grid names, the small tiles
 - **`dtc_stamp_ms.py`** - the stamp of every export, with `vendor/dtcstamp.py` (dtcstamp 0.1.3, Apache 2.0)
 
-Both are pure Python and are tested without Metashape: `python3 -m unittest discover tests`.
+- **`ms_appender.py`**, **`ms_append_ms.py`**, **`ms_append_gui.py`** - the appender between projects: the decisions (pure), their application with the Metashape API, the dialog
+
+`ms_blocks.py`, `dtc_stamp_ms.py` and `ms_appender.py` are pure Python and are tested without Metashape: `python3 -m unittest discover tests`.
 The version number is aligned with the 3DSC Blender extension (`dsc_tools`).
 
 ### STEP2 - the blocks
@@ -38,6 +41,15 @@ STEP2 builds a Metashape **Block Model** (`buildModel(split_in_blocks=True, expo
 - **stops** when two blocks have the same content (the file without its `mtllib` line), or the same bbox and face count, or when all the blocks add up to more than 1.5 × the faces of the source model. This is what the 0c2559a version produced: 32 copies of the whole model (`exportModel(clip_to_boundary=True)` clips to the boundary *shapes*, not to the region);
 - with **min faces** (2000 by default, 0 = off), merges each smaller tile into its largest touching neighbour, or only flags it. The merged tile's files go into `_absorbed/`, never deleted;
 - **names** each tile `block_xNNN_yNNN` from its centre, in the grid of the cut (side `blocks_size`), counted from the corner of the model; `.obj`, `.mtl`, `.tls` and the `mtllib` line are renamed together, and Metashape's name («Tile 93341-516978») stays in `chunk.meta["3dsc_tile_source_name"]` and in the stamp.
+
+### Append photos from another project
+
+*Import › Append Photos from Another Project…* opens a dialog. You choose the source project and chunk, and which photos: the selected cameras, one camera group, the enabled ones or all. They are added to the **active chunk** as a new camera group; photos already in the project (same file, or same content if you ask) are skipped. Along with them, as you choose:
+- **calibration**: the source calibration groups copied as initial values (optionally fixed), or the target group with the same name, or new groups from EXIF;
+- **markers**: projections merged into the markers with the same name, or new markers with a prefix; their reference coordinates are copied, transformed between two coordinate systems, or brought along unchecked when one of the two systems is local;
+- **masks**, **camera reference**, the enabled/disabled state.
+
+Nothing is aligned: afterwards run *Align Photos* with «Reset current alignment» unchecked, then *Optimize Cameras*. The target chunk records the operation in its `meta` (`3dsc_append_<time>`: source, counts, options).
 
 ### Stamps
 

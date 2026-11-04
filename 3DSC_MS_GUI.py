@@ -59,6 +59,7 @@ class MetashapeTools:
         ps.app.addMenuItem(label + "/Import/Import Multiple Models", self.import_multiple_models)
         ps.app.addMenuItem(label + "/Import/Import Single Model with Shift", self.import_single_model_with_shift)
         ps.app.addMenuItem(label + "/Import/Import Tiled Models", self.import_tiled_models)
+        ps.app.addMenuItem(label + "/Import/Append Photos from Another Project...", self.append_photos_from_project)
         
         ps.app.addMenuItem(label + "/Texturing/Texturize Models", self.texturize_models)
         ps.app.addMenuItem(label + "/Texturing/Texturize Models (200m² limit)", self.texturize_models_200)
@@ -605,6 +606,15 @@ class MetashapeTools:
         except Exception as e:
             ps.app.messageBox(f"Error: An error occurred: {str(e)}")
     
+    def append_photos_from_project(self):
+        """Bring a group of photos from a chunk of another project into the active
+        chunk, with calibration, marker projections and masks (ms_append_gui)."""
+        try:
+            import ms_append_gui
+            ms_append_gui.run_append_dialog()
+        except Exception as e:
+            ps.app.messageBox(f"Error - Append photos: {str(e)}")
+
     def import_single_model_with_shift(self):
         try:
             # Ask user to specify a 3D model
