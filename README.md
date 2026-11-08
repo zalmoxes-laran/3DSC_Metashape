@@ -2,21 +2,52 @@
 
 3DSC tools for Metashape is a collection of Python scripts designed to create an efficient workflow between Metashape and the Blender 3DSC addon (3D Survey Collection). This toolkit simplifies the process of importing, texturizing, and exporting 3D models with proper georeferencing and optimization.
 
-## Main Features
+## The chain
 
-With these scripts you can:
+Photos → alignment → a high mesh, cleaned (trees, scaffolding, noise) → three **masters** by polygon density:
 
-1. Load a **global coordinate shift** once and apply it to every import/export
-2. Import 3D models (single, multiple, tiled) with or without coordinate shifts
-3. Apply intelligent texturization based on model area (with regular and 200m² limit options)
-4. **Cut a giant mesh into blocks directly in Metashape** (Block Model), with a check that stops identical blocks, grid names `block_xNNN_yNNN` and the small edge tiles merged or flagged
-5. Run a **guided end-to-end workflow** (prepare LOD0 → cut → texturize → LOD → export)
-6. Export models in various formats with coordinate systems preserved
-7. Export undistorted images of the active chunk
-8. Generate Level of Detail (LOD) models for visualization optimization
-9. **Append photos from another project**: bring a camera group, the selected cameras or all of them from a chunk of another Metashape project into the active chunk, as a camera group of its own, with their calibration, marker projections, masks and camera reference
-10. **Stamp every export**: each exported file gets its `<file>.stamp.json` (dtcstamp), read from what Metashape recorded
-11. ~~Import camera positions from iPad's 3D Scanner App~~ *(experimental - currently disabled)*
+1. **geometric super master**, above 10 000 polygons/m²: kept aside, also for print;
+2. **texturable master**, 10 000/m²: the Cesium **tileset** and the normal maps come from it;
+3. **tileable master**, 1 000/m² = LOD0: cut into **blocks**, textured with the Demetrescu-D'Annibale rule, then LODs and normal maps, for Blender.
+
+Clean the high model and run *Masters* again: the lighter masters inherit the cleaning.
+Two words are kept apart: a **block** is a piece of mesh physically cut (one file per block); the **tileset** is Metashape's quadtree exported as 3D Tiles.
+
+## The menu
+
+**3DSC Metashape Tools**
+1. **Shift…** — load SHIFT.txt, see the file and the numbers, clear. The shift is saved **in the project** (`doc.meta`) and comes back with the .psx.
+2. **Import ›** **Models…** (files or a folder, shift on/off, one chunk per model copied from the **master**, or all in one chunk) · **Photos from Another Project…**
+3. **Masters…** — the three masters from the cleaned source model, as models of the same chunk (`M_geometric`, `M_texturable_<d>`, `M_tileable_<d>`).
+4. **Blocks…** — the cut of the tileable master on a grid **turned with the monument** and tight on the mesh (see below), with the checks of `ms_blocks`.
+5. **Texturing…** — the Demetrescu-D'Annibale rule on the ticked chunks, with a live simulation (pages, texel, memory) and the reference.
+6. **LODs + Normal Maps** (blocks).
+7. **Tileset…** — Cesium 3D Tiles (.3tz or folder) with the **screen space error** chosen (desktop 16 / web 24 / mobile 32), version, KTX2/JPEG, Draco, heights onto EGM2008 for that export only, and a check read from the written file.
+8. **Export ›** blocks, models, active model with shift, undistorted images.
+- **Utility ›** Rename Chunks (pattern `{n}`, `{name}`, `{model}`; the names become file names) · Flag LOD0 (old STEP1).
+- **About · Rule and References.**
+
+### The master
+
+A copy of the photo chunk with **photos and tie points only** (*Import › Models… › Create master from the active chunk*, flagged `3dsc_master` in the chunk's meta). Every imported model and every block lands in a copy of it, so it can be textured from the photos without carrying depth maps, point clouds or other meshes along.
+
+### Blocks on a rotated grid
+
+Metashape's Block Model lays its grid in the CRS, i.e. on the north. 3DSC hands the cut a **local oblique Mercator** centred on the site, scale 1, whose grid is turned by the monument's bearing (`buildModel(blocks_crs=…, blocks_origin=…)`, Metashape 2.3.2; Metashape calls the projection `Oblique_Mercator`, EPSG 9815). The bearing is found from the tightest rectangle around the mesh, or typed; the grid is centred on the mesh with as few cells as its extent needs.
+
+The **chunk is never touched**: its CRS and transform stay as they are, nothing rotated is ever saved, and the same bearing gives the same cut. The block files are then exported again by Metashape in the chunk's CRS with a `metadata.xml` like the one of a north cut, plus `grid_crs.wkt`: from there on a rotated cut is the same folder as a north one.
+
+Measured on a 40 × 16 m slab turned by 10° (Stereo70, 8 m blocks): north grid 18 cells, rotated grid 10; the 10 blocks brought back into master copies lie on the slab, cell by cell.
+
+### Texturing: the Demetrescu-D'Annibale rule
+
+Pages = round(area · (1000 / texel)² / (atlas² · UV ratio)), with texel 1.26 mm, atlas 4096 px, UV ratio 0.6 (Eq. 1). A large area needs no cap: either more pages at the same texel, or a maximum of pages and the coarser texel it gives (the old «200 m²» command did the latter without saying so). With many chunks the panel offers a new project holding the reference chunk and the blocks only; the open project is unchanged.
+
+> Demetrescu, E., Ferdani, D., Fanini, B., D'Annibale, E., Berto, S., Morretta, S., Rea, R. (2026). Digital Replicas and 3D Virtual Reconstructions for Large Excavations in Urban Archaeology: Methods, Tools, and Techniques Drawn from the "Metro C" Case Study in Rome. *Remote Sensing* 18(2), 203. https://doi.org/10.3390/rs18020203
+
+### Tileset: heights
+
+When the chunk's CRS has no vertical datum and its markers carry heights, the panel says so. If they are orthometric, the export can move them onto EGM2008 **in memory**: marker heights H + N − Δdatum, `updateTransform`, export, then markers and transform are put back exactly (measured on Templu Mare 2015: restored to the last bit). N comes from Metashape's EGM2008 geoid, or from a JSON table `{marker: N}`.
 
 ## Installation
 
@@ -26,13 +57,17 @@ With these scripts you can:
 
 ### The files
 
-`3DSC_MS_GUI.py` is the menu. It imports two modules that must stay **in the same folder**:
+`3DSC_MS_GUI.py` is the menu. It imports modules that must stay **in the same folder**:
+- **`ms_panels.py`** - the panels (PySide2)
+- **`ms_dd.py`** - the Demetrescu-D'Annibale rule and the master densities (pure)
+- **`ms_grid.py`** - the rotated grid of the cut (pure)
+- **`ms_tileset.py`** - the check of an exported tileset, read from the file (pure)
 - **`ms_blocks.py`** - the STEP2 blocks read from the files Metashape writes: the check, the grid names, the small tiles
 - **`dtc_stamp_ms.py`** - the stamp of every export, with `vendor/dtcstamp.py` (dtcstamp 0.1.3, Apache 2.0)
 
 - **`ms_appender.py`**, **`ms_append_ms.py`**, **`ms_append_gui.py`** - the appender between projects: the decisions (pure), their application with the Metashape API, the dialog
 
-`ms_blocks.py`, `dtc_stamp_ms.py` and `ms_appender.py` are pure Python and are tested without Metashape: `python3 -m unittest discover tests`.
+`ms_blocks.py`, `dtc_stamp_ms.py`, `ms_appender.py`, `ms_dd.py`, `ms_grid.py` and `ms_tileset.py` are pure Python and are tested without Metashape: `python3 -m unittest discover tests`.
 The version number is aligned with the 3DSC Blender extension (`dsc_tools`).
 
 ### STEP2 - the blocks

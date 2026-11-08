@@ -19,6 +19,9 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 import ms_blocks
 import dtc_stamp_ms
+import ms_dd
+import ms_grid
+import ms_tileset
 
 
 class MetashapeTools:
@@ -50,38 +53,24 @@ class MetashapeTools:
         except:
             pass  # Ignora errori se il menu non esiste
 
-        # Aggiungi i sottomenu per ogni gruppo di funzioni
-        shift_preview = self.get_global_shift_preview(compact=True)
-        ps.app.addMenuItem(label + "/Shift/STEP0 - Load Global Shift File (optional)", self.load_global_shift_file)
-        ps.app.addMenuItem(label + "/Shift/Current Shift -> " + shift_preview, self.show_global_shift_preview)
-        ps.app.addMenuItem(label + "/Shift/Clear Global Shift", self.clear_global_shift)
-
-        ps.app.addMenuItem(label + "/Import/Import Multiple Models", self.import_multiple_models)
-        ps.app.addMenuItem(label + "/Import/Import Single Model with Shift", self.import_single_model_with_shift)
-        ps.app.addMenuItem(label + "/Import/Import Tiled Models", self.import_tiled_models)
-        ps.app.addMenuItem(label + "/Import/Append Photos from Another Project...", self.append_photos_from_project)
-        
-        ps.app.addMenuItem(label + "/Texturing/Texturize Models", self.texturize_models)
-        ps.app.addMenuItem(label + "/Texturing/Texturize Models (200m² limit)", self.texturize_models_200)
-        
-        ps.app.addMenuItem(label + "/Export/Export Multiple Models", self.export_multiple_models)
-        ps.app.addMenuItem(label + "/Export/Export Single Model with Shift", self.export_single_model_with_shift)
-        ps.app.addMenuItem(label + "/Export/Export Tiled Models", self.export_tiled_models)
-        ps.app.addMenuItem(label + "/Export/Cut Giant Mesh into Blocks (with Shift)", self.cut_giant_mesh_into_blocks_with_shift)
-        ps.app.addMenuItem(label + "/Export/Workflow Export Blocks (Textured First)", self.export_workflow_blocks_textured)
-        ps.app.addMenuItem(label + "/Export/Export Undistorted Images (Active Chunk)", self.export_undistorted_images_active_chunk)
-
-        ps.app.addMenuItem(label + "/Workflow/STEP1 Prepare or Flag LOD0", self.prepare_or_flag_lod0)
-        ps.app.addMenuItem(label + "/Workflow/STEP2 Cut Mesh into Blocks (Options)", self.cut_giant_mesh_into_blocks_with_shift)
-        ps.app.addMenuItem(label + "/Workflow/STEP3 Texturize Workflow Blocks", self.texturize_workflow_blocks)
-        ps.app.addMenuItem(label + "/Workflow/STEP4 Generate LODs + Normal Maps (Experimental)", self.generate_workflow_lods_experimental)
-        ps.app.addMenuItem(label + "/Workflow/STEP5 Export Workflow Blocks", self.export_workflow_blocks_textured)
-
-        ps.app.addMenuItem(label + "/Utility/Rename Chunks", self.rename_chunks)
-        ps.app.addMenuItem(label + "/Utility/LOD Generator", self.lod_generator)
-        
-        # EXPERIMENTAL - iPad AR Camera Import
-        # ps.app.addMenuItem(label + "/iPad/Import iPad AR Camera Data (EXPERIMENTAL)", self.import_ipad_cameras)
+        # One entry per step of the chain (see README, «The chain»).
+        self.restore_shift_from_doc()
+        L = label + "/"
+        ps.app.addMenuItem(L + "1 · Shift…   [" + self.get_global_shift_preview(compact=True) + "]", self.shift_panel)
+        ps.app.addMenuItem(L + "2 · Import/Models…", self.import_panel)
+        ps.app.addMenuItem(L + "2 · Import/Photos from Another Project…", self.append_photos_from_project)
+        ps.app.addMenuItem(L + "3 · Masters (geometric · texturable · tileable)…", self.masters_panel)
+        ps.app.addMenuItem(L + "4 · Blocks (cut the tileable master on a grid)…", self.blocks_panel)
+        ps.app.addMenuItem(L + "5 · Texturing (Demetrescu-D'Annibale rule)…", self.texturing_panel)
+        ps.app.addMenuItem(L + "6 · LODs + Normal Maps (blocks)", self.generate_workflow_lods_experimental)
+        ps.app.addMenuItem(L + "7 · Tileset (Cesium 3D Tiles, .3tz)…", self.tileset_panel)
+        ps.app.addMenuItem(L + "8 · Export/Blocks (textured, with LODs)", self.export_workflow_blocks_textured)
+        ps.app.addMenuItem(L + "8 · Export/Models (one file per chunk)", self.export_multiple_models)
+        ps.app.addMenuItem(L + "8 · Export/Active Model with Shift", self.export_single_model_with_shift)
+        ps.app.addMenuItem(L + "8 · Export/Undistorted Images (active chunk)", self.export_undistorted_images_active_chunk)
+        ps.app.addMenuItem(L + "Utility/Rename Chunks…", self.rename_panel)
+        ps.app.addMenuItem(L + "Utility/Flag LOD0 (old STEP1)", self.prepare_or_flag_lod0)
+        ps.app.addMenuItem(L + "About · Rule and References", self.about_panel)
 
     @property
     def doc(self):
@@ -106,6 +95,10 @@ class MetashapeTools:
     def _read_shift_parameters_from_file(self, file_path):
         with open(file_path, 'r', encoding='utf-8') as f:
             first_line = f.readline().strip()
+        return self._parse_shift_line(first_line)
+
+    def _parse_shift_line(self, first_line):
+        first_line = first_line.strip()
         parts = first_line.split()
         if len(parts) < 4:
             raise Exception("Invalid shift.txt format. Expected: CRS SHIFT_X SHIFT_Y SHIFT_Z")
@@ -123,12 +116,53 @@ class MetashapeTools:
             "shift": shift,
         }
 
+    # The shift lives in the project (doc.meta), so it comes back with the .psx.
+    SHIFT_META_LINE = "3dsc_shift_line"
+    SHIFT_META_FILE = "3dsc_shift_file"
+
+    def set_shift_from_file(self, path):
+        self._set_global_shift_state(path, self._read_shift_parameters_from_file(path))
+
+    def _save_shift_to_doc(self):
+        try:
+            meta = self.doc.meta
+            meta[self.SHIFT_META_LINE] = self.global_shift_line or ""
+            meta[self.SHIFT_META_FILE] = self.global_shift_file or ""
+        except Exception as e:
+            print(f"[3DSC shift] not saved in the project: {e}")
+
+    def restore_shift_from_doc(self):
+        """Read the shift kept in the project; a project without one clears it."""
+        try:
+            line = self.doc.meta[self.SHIFT_META_LINE]
+            path = self.doc.meta[self.SHIFT_META_FILE]
+        except Exception:
+            line, path = None, None
+        if not line:
+            if self.global_shift_line is not None and getattr(self, "_shift_doc", None) != id(self.doc):
+                self.global_shift_file = self.global_shift_line = self.global_shift_vector = None
+                self.global_shift_crs_string = self.global_shift_crs = None
+            self._shift_doc = id(self.doc)
+            return
+        if line != self.global_shift_line:
+            try:
+                parsed = self._parse_shift_line(line)
+                self.global_shift_file = path or None
+                self.global_shift_line = parsed["line"]
+                self.global_shift_vector = parsed["shift"]
+                self.global_shift_crs_string = parsed["crs_string"]
+                self.global_shift_crs = parsed["crs"]
+            except Exception as e:
+                print(f"[3DSC shift] the project's shift is unreadable: {e}")
+        self._shift_doc = id(self.doc)
+
     def _set_global_shift_state(self, file_path, parsed_shift):
         self.global_shift_file = file_path
         self.global_shift_line = parsed_shift["line"]
         self.global_shift_vector = parsed_shift["shift"]
         self.global_shift_crs_string = parsed_shift["crs_string"]
         self.global_shift_crs = parsed_shift["crs"]
+        self._save_shift_to_doc()
         self.init_gui()
 
     def get_global_shift_preview(self, compact=False):
@@ -144,41 +178,19 @@ class MetashapeTools:
             return text[:56] + "..."
         return text
 
-    def load_global_shift_file(self):
-        try:
-            shift_path = ps.app.getOpenFileName("Select global shift.txt file")
-            if not shift_path:
-                return
-            parsed = self._read_shift_parameters_from_file(shift_path)
-            self._set_global_shift_state(shift_path, parsed)
-            ps.app.messageBox(
-                "Global shift loaded:\n"
-                + self.get_global_shift_preview(compact=False)
-            )
-        except Exception as e:
-            ps.app.messageBox(f"Error: Unable to load global shift: {str(e)}")
-
-    def show_global_shift_preview(self):
-        if self.global_shift_vector is None:
-            ps.app.messageBox("Global shift is not set.")
-            return
-        origin = self.global_shift_file if self.global_shift_file else "N/A"
-        ps.app.messageBox(
-            "Current global shift:\n"
-            + self.get_global_shift_preview(compact=False)
-            + f"\n\nSource file:\n{origin}"
-        )
-
-    def clear_global_shift(self):
+    def clear_global_shift(self, quiet=False):
         self.global_shift_file = None
         self.global_shift_line = None
         self.global_shift_vector = None
         self.global_shift_crs_string = None
         self.global_shift_crs = None
+        self._save_shift_to_doc()
         self.init_gui()
-        ps.app.messageBox("Global shift cleared.")
+        if not quiet:
+            ps.app.messageBox("Global shift cleared.")
 
     def _resolve_shift_for_operation(self, operation_label, ask_if_missing=True):
+        self.restore_shift_from_doc()
         if self.global_shift_vector is not None:
             return self.global_shift_crs, self.global_shift_vector, self.global_shift_line
 
@@ -332,7 +344,16 @@ class MetashapeTools:
                 pass
         return [out_path]
 
-    def _import_block(self, chunk, obj_path, srs_origin):
+    def _import_block(self, chunk, obj_path, srs_origin, grid_crs=None):
+        """Bring one block back where it was cut. Blocks cut on a rotated grid
+        are written in the grid's own CRS (no metadata.xml): Metashape converts
+        them back from ``grid_crs``."""
+        if grid_crs is not None:
+            chunk.importModel(path=obj_path, format=self._model_format_for(obj_path), crs=grid_crs)
+            return
+        self._import_block_srs(chunk, obj_path, srs_origin)
+
+    def _import_block_srs(self, chunk, obj_path, srs_origin):
         """Import a block file back into ``chunk`` WHERE IT WAS CUT.
 
         Metashape writes the blocks in a local frame whose origin is the
@@ -348,7 +369,138 @@ class MetashapeTools:
                 kwargs["crs"] = chunk.crs
         chunk.importModel(**kwargs)
 
-    def _build_block_model_and_collect(self, chunk, target_area_m2, blocks_folder):
+    # ── the grid of the cut (ms_grid): rotated in the cut only ─────────────
+
+    def _vertex_matrix(self, chunk, model):
+        """Matrix from a model's vertex coordinates to geocentric (ECEF).
+
+        Measured 8 Nov 2026 on Metashape 2.3.2: a model BUILT by Metashape has
+        an identity ``Model.transform`` and internal vertices (→ the chunk's
+        transform); an IMPORTED model carries its own translation to ECEF and
+        the chunk's transform does not apply."""
+        mt = getattr(model, "transform", None)
+        if isinstance(mt, ps.Matrix):
+            ident = all(abs(mt[r, c] - (1.0 if r == c else 0.0)) < 1e-12 for r in range(4) for c in range(4))
+            if not ident:
+                return mt
+        return chunk.transform.matrix
+
+    def _mesh_xy(self, chunk, crs, limit=20000, model=None):
+        """Up to ``limit`` vertices of ``model`` (default: the active one), as (x, y) in ``crs``."""
+        model = model if model is not None else chunk.model
+        verts = model.vertices
+        n = len(verts)
+        T = self._vertex_matrix(chunk, model)
+        step = max(1, n // limit)
+        out = []
+        for i in range(0, n, step):
+            q = chunk.crs.project(T.mulp(verts[i].coord))
+            out.append((q[0], q[1]))
+        return out
+
+    def _grid_for(self, chunk, side, grid):
+        """→ (blocks_crs, blocks_origin, info) for ``grid`` = {"mode": "north" |
+        "fit" | "bearing", "bearing": deg}; (None, None, info) for north.
+        The bearing is measured in the chunk's own map grid; the local oblique
+        Mercator is then re-aimed once to absorb the meridian convergence."""
+        mode = (grid or {}).get("mode", "north")
+        crs = getattr(chunk, "crs", None)
+        if mode == "north":
+            return None, None, {"mode": "north"}
+        if crs is None or chunk.model is None:
+            raise Exception("A rotated grid needs a georeferenced chunk with an active model.")
+        if "PROJCS" not in crs.wkt:
+            raise Exception("A rotated grid needs a projected CRS (metres), not %s." % crs.name)
+        pts = self._mesh_xy(chunk, crs)
+        bearing = ms_grid.fit_bearing(pts) if mode == "fit" else ms_grid.reduce_bearing(float(grid.get("bearing", 0.0)))
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        cx, cy = (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
+        cz = 0.0
+        geog = crs.geogcs
+        ll = ps.CoordinateSystem.transform(ps.Vector([cx, cy, cz]), crs, geog)
+        import math
+        b = math.radians(bearing)
+        p0 = ps.Vector([cx, cy, cz])
+        p1 = ps.Vector([cx + 10.0 * math.sin(b), cy + 10.0 * math.cos(b), cz])
+        aim = bearing
+        for _ in range(2):
+            gcrs = ps.CoordinateSystem(ms_grid.oblique_wkt(geog.wkt, ll[1], ll[0], aim))
+            q0 = ps.CoordinateSystem.transform(p0, crs, gcrs)
+            q1 = ps.CoordinateSystem.transform(p1, crs, gcrs)
+            aim += ms_grid.bearing_of((q0[0], q0[1]), (q1[0], q1[1]))
+        gcrs = ps.CoordinateSystem(ms_grid.oblique_wkt(geog.wkt, ll[1], ll[0], aim))
+        gpts = []
+        for x, y in pts:
+            q = ps.CoordinateSystem.transform(ps.Vector([x, y, cz]), crs, gcrs)
+            gpts.append((q[0], q[1]))
+        lay = ms_grid.layout(gpts, side)
+        north = ms_grid.layout(pts, side)
+        info = {"mode": mode, "bearing": bearing, "true_bearing": aim, "cells": lay["cells"],
+                "nx": lay["nx"], "ny": lay["ny"], "north_cells": north["cells"],
+                "origin": list(lay["origin"]), "wkt": gcrs.wkt}
+        return gcrs, ps.Vector([lay["origin"][0], lay["origin"][1], 0.0]), info
+
+    def _georef_rotated_blocks(self, chunk, source_model, files, folder, tile_models=None):
+        """Bring the files of a rotated cut into the chunk's CRS.
+
+        Measured 8 Nov 2026 (Metashape 2.3.2): with a custom ``blocks_crs`` the
+        block files carry no metadata.xml and a frame of their own. Metashape
+        also adds one model per block to the chunk: each is exported again
+        here, by Metashape itself, in the chunk's CRS minus one origin (the
+        mesh centre, to the metre), over the file of the cut; a metadata.xml
+        like the one of a north cut is written beside them. From here on a
+        rotated cut is the same folder as a north one."""
+        tile_models = tile_models or {}
+        crs = chunk.crs
+        pts = self._mesh_xy(chunk, crs, limit=2000, model=source_model)
+        origin = (float(round(sum(p[0] for p in pts) / len(pts))),
+                  float(round(sum(p[1] for p in pts) / len(pts))), 0.0)
+        missing = []
+        for path in files:
+            if not path.lower().endswith(".obj"):
+                continue
+            stem = os.path.splitext(os.path.basename(path))[0]
+            tm = tile_models.get(stem)
+            if tm is None:
+                missing.append(stem)
+                continue
+            chunk.model = tm
+            kw = dict(path=path, format=ps.ModelFormat.ModelFormatOBJ, crs=crs,
+                      shift=ps.Vector(list(origin)), clip_to_boundary=False)
+            try:
+                chunk.exportModel(save_texture=False, **kw)
+            except TypeError:
+                chunk.exportModel(**kw)
+            ps.app.update()
+        if source_model is not None:
+            chunk.model = source_model
+        if missing:
+            raise Exception("rotated cut: no block model in the chunk for %s" % ", ".join(missing[:10]))
+        auth = getattr(crs, "authority", "") or ""
+        srs = auth.replace("::", ":") if auth else crs.wkt
+        with open(os.path.join(folder, "metadata.xml"), "w", encoding="utf-8") as fh:
+            fh.write('<?xml version="1.0" encoding="utf-8"?>\n<ModelMetadata version="1">\n'
+                     "\t<!--Spatial Reference System-->\n\t<SRS>%s</SRS>\n"
+                     "\t<!--Origin in Spatial Reference System-->\n"
+                     "\t<SRSOrigin>%r,%r,%r</SRSOrigin>\n"
+                     "\t<!--3DSC: blocks cut on a rotated grid, see grid_crs.wkt-->\n"
+                     "</ModelMetadata>\n" % (srs, origin[0], origin[1], origin[2]))
+        return origin
+
+    def grid_preview(self, chunk, side, grid):
+        """What the cut will be, without cutting: for the Blocks panel."""
+        _g, _o, info = self._grid_for(chunk, side, grid)
+        if info["mode"] == "north":
+            pts = self._mesh_xy(chunk, chunk.crs)
+            lay = ms_grid.layout(pts, side)
+            return {"text": "north grid: about %d × %d = %d cells" % (lay["nx"], lay["ny"], lay["cells"]),
+                    "bearing": None}
+        return {"text": "bearing %.2f° · %d × %d = %d cells (north grid: %d)" % (
+            info["bearing"], info["nx"], info["ny"], info["cells"], info["north_cells"]),
+            "bearing": info["bearing"]}
+
+    def _build_block_model_and_collect(self, chunk, target_area_m2, blocks_folder, grid=None):
         """Build a Metashape **Block Model** (mesh built already split into
         separate spatial blocks) and collect the exported block meshes.
 
@@ -365,6 +517,7 @@ class MetashapeTools:
         """
         side = max(0.1, math.sqrt(max(0.01, target_area_m2)))
         before = self._scan_files(blocks_folder)
+        grid_crs, grid_origin, self._last_grid = self._grid_for(chunk, side, grid)
 
         sources = []
         DS = getattr(ps, "DataSource", None)
@@ -390,6 +543,9 @@ class MetashapeTools:
                     build_texture=False,
                     replace_asset=False,
                 )
+                if grid_crs is not None:
+                    kwargs["blocks_crs"] = grid_crs
+                    kwargs["blocks_origin"] = grid_origin
                 if src is not None:
                     kwargs["source_data"] = src
                 chunk.buildModel(**kwargs)
@@ -622,90 +778,8 @@ class MetashapeTools:
         except Exception as e:
             ps.app.messageBox(f"Error - Append photos: {str(e)}")
 
-    def import_single_model_with_shift(self):
-        try:
-            # Ask user to specify a 3D model
-            model_path = ps.app.getOpenFileName("Specify the 3D model file:")
-            if not model_path:
-                return
-
-            projection_coor_obj, shift_coor, _ = self._resolve_shift_for_operation(
-                "Import Single Model with Shift", ask_if_missing=True
-            )
-            
-            # Check for active chunk or create new one
-            if self.doc.chunk is None:
-                print("No active chunk found. Creating a new chunk.")
-                chunk = self.doc.addChunk()
-            else:
-                chunk = self.doc.chunk
-                print("Using active chunk.")
-            
-            # Import the model
-            if shift_coor:
-                if projection_coor_obj:
-                    chunk.importModel(path=model_path, shift=shift_coor, crs=projection_coor_obj)
-                else:
-                    chunk.importModel(path=model_path, shift=shift_coor)
-            else:
-                chunk.importModel(path=model_path)
-                
-            ps.app.messageBox("Success - Model imported successfully into the active chunk.")
-            
-        except Exception as e:
-            ps.app.messageBox(f"Error: An error occurred: {str(e)}")
-    
-    def import_tiled_models(self):
-        try:
-            # Get the folder containing the tiles
-            import_folder = ps.app.getExistingDirectory("Select the folder containing the exported tiles")
-            if not import_folder:
-                return
-                
-            _, shift, _ = self._resolve_shift_for_operation(
-                "Import Tiled Models", ask_if_missing=True
-            )
-            
-            # Create a new chunk for the reimported model
-            new_chunk = self.doc.addChunk()
-            new_chunk.label = "Reimported_Tiles"
-            
-            # List OBJ files to import
-            obj_files = [f for f in os.listdir(import_folder) if f.endswith('.obj')]
-            
-            # Import each OBJ file
-            for obj_file in obj_files:
-                obj_path = os.path.join(import_folder, obj_file)
-                if shift:
-                    new_chunk.importModel(obj_path, ps.ModelFormat.ModelFormatOBJ, shift=shift)
-                else:
-                    new_chunk.importModel(obj_path, ps.ModelFormat.ModelFormatOBJ)
-            
-            # Create unified mesh from imported tiles
-            new_chunk.buildModel(surface_type=ps.Arbitrary, interpolation=ps.EnabledInterpolation)
-            
-            # Generate texture
-            new_chunk.buildUV(mapping_mode=ps.GenericMapping)
-            new_chunk.buildTexture(blending_mode=ps.MosaicBlending)
-            
-            # Build tiled model
-            new_chunk.buildTiledModel()
-            
-            ps.app.messageBox("Success - Tiles reimported and tiled model regenerated successfully.")
-            
-        except Exception as e:
-            ps.app.messageBox(f"Error: An error occurred: {str(e)}")
-
-    def _compute_texture_pages(self, area_model, tex_size, ratio, x_res_a_terra, max_area=None):
-        if max_area is not None and area_model > max_area:
-            return 12
-        numtex = pow((10000 / x_res_a_terra), 2) / (tex_size * tex_size * ratio)
-        numtex_x_area = (numtex * area_model) / 100
-        # Published Equation (1) rounding: 0.5 always rounds up, integer result.
-        # (Python's built-in round() uses banker's rounding, which would deviate.)
-        return max(1, int(math.floor(numtex_x_area + 0.5)))
-
-    def _texturize_chunk_models(self, chunk, tex_size=4096, ratio=0.6, x_res_a_terra=1.26, max_area=None):
+    def _texturize_chunk_models(self, chunk, tex_size=4096, ratio=0.6, x_res_a_terra=1.26, max_area=None,
+                                max_pages=None):
         models = self._extract_models(chunk)
         if not models:
             return 0
@@ -725,13 +799,14 @@ class MetashapeTools:
                 print(f"{chunk.label} has no area. Maybe the model isn't metric.")
                 continue
 
-            tex_num = self._compute_texture_pages(
-                area_model=area_model,
-                tex_size=tex_size,
-                ratio=ratio,
-                x_res_a_terra=x_res_a_terra,
-                max_area=max_area,
-            )
+            sim = ms_dd.simulate(area_model, x_res_a_terra, tex_size, ratio, max_pages)
+            tex_num = sim["pages_cap"] if sim["over"] else sim["pages"]
+            if hasattr(chunk, "meta"):
+                chunk.meta["3dsc_dd"] = json.dumps({
+                    "area_m2": round(area_model, 3), "pages": tex_num, "rule_pages": sim["pages"],
+                    "texel_mm": round(sim["texel_cap"] if sim["over"] else sim["texel"], 4),
+                    "texel_target_mm": x_res_a_terra, "atlas_px": tex_size, "uv_ratio": ratio,
+                    "reference": "Demetrescu et al. 2026, Remote Sensing 18, 203, Eq. 1"})
             print(f"{chunk.label} has an area of {area_model} mq and needs {int(tex_num)} textures.")
 
             chunk.buildUV(mapping_mode=ps.GenericMapping, page_count=tex_num, texture_size=tex_size)
@@ -759,26 +834,6 @@ class MetashapeTools:
                 print(f"{progress_title}: {progress:.2f}% ({idx}/{total} chunks)")
             ps.app.update()
         return processed
-
-    def texturize_models(self):
-        try:
-            print("Starting texturize script")
-            ps.app.update()
-            processed = self._texturize_chunk_list(list(self.doc.chunks), max_area=None, progress_title="Texturize")
-            ps.app.update()
-            ps.app.messageBox(f"Success - Texturization completed. Textured models: {processed}.")
-        except Exception as e:
-            ps.app.messageBox(f"Error: An error occurred: {str(e)}")
-
-    def texturize_models_200(self):
-        try:
-            print("Starting texturize script with 200m² limit")
-            ps.app.update()
-            processed = self._texturize_chunk_list(list(self.doc.chunks), max_area=200, progress_title="Texturize200")
-            ps.app.update()
-            ps.app.messageBox(f"Success - Texturization with 200m² limit completed. Textured models: {processed}.")
-        except Exception as e:
-            ps.app.messageBox(f"Error: An error occurred: {str(e)}")
 
     def prepare_or_flag_lod0(self):
         try:
@@ -1424,8 +1479,17 @@ class MetashapeTools:
         # not by clipping an existing mesh). Mirrors the 3DSC Blender
         # "Cutter". blocks_size = sqrt(area) in metres.
         cut_blocks, produced, source_used = self._build_block_model_and_collect(
-            chunk, target_area_m2, blocks_folder
+            chunk, target_area_m2, blocks_folder, panel.get("grid")
         )
+        grid_info = getattr(self, "_last_grid", None) or {"mode": "north"}
+        grid_crs = ps.CoordinateSystem(grid_info["wkt"]) if grid_info.get("wkt") else None
+        if grid_crs is not None:
+            with open(os.path.join(blocks_folder, "grid_crs.wkt"), "w", encoding="utf-8") as fh:
+                fh.write(grid_info["wkt"] + "\n")
+            new_models = {m.label: m for m in self._extract_models(chunk)
+                          if m.key not in keys_before and m.label}
+            self._georef_rotated_blocks(chunk, source_model, [b["obj_path"] for b in cut_blocks],
+                                        blocks_folder, new_models)
         if not cut_blocks:
             sample = "\n".join(os.path.basename(p) for p in produced[:30]) or "(no files)"
             raise Exception(
@@ -1450,7 +1514,14 @@ class MetashapeTools:
         # name of its own cell (its grown bbox may centre in the next one)
         srs_origin = ms_blocks.read_srs_origin(blocks_folder)
         mapping = {s["name"]: s["name"] for s in stats}
-        if panel.get("grid_naming", True):
+        if panel.get("grid_naming", True) and grid_crs is not None:
+            # rotated grid: the cut's own cell «Tile i-j», counted from 1
+            cells = {s["name"]: ms_grid.cell_of(s["name"]) for s in stats}
+            if all(cells.values()):
+                i0 = min(c[0] for c in cells.values())
+                j0 = min(c[1] for c in cells.values())
+                mapping = {n: ms_blocks.grid_name((c[0] - i0 + 1, c[1] - j0 + 1)) for n, c in cells.items()}
+        elif panel.get("grid_naming", True):
             origin = ms_blocks.cut_grid_origin(stats, side, srs_origin)
             mapping = ms_blocks.grid_names(stats, side, origin)
 
@@ -1496,10 +1567,14 @@ class MetashapeTools:
         if output_multi_chunks:
             # Re-import each block as its own chunk (copies the source chunk
             # so cameras/depth maps travel with it for STEP3 texturing).
+            master = self._get_chunk_by_key(panel.get("master_key")) if panel.get("master_key") else None
             for block in cut_blocks:
-                new_chunk = chunk.copy()
+                if master is not None:
+                    new_chunk = self._copy_master(master)
+                else:
+                    new_chunk = chunk.copy()
+                    self._prepare_lightweight_chunk(new_chunk)
                 new_chunk.label = f"{safe_label}_{block['name']}"
-                self._prepare_lightweight_chunk(new_chunk)
                 self._import_block(new_chunk, block["obj_path"], srs_origin)
                 self._set_chunk_textured_flag(new_chunk, False)
                 if hasattr(new_chunk, "meta"):
@@ -1533,7 +1608,12 @@ class MetashapeTools:
             "3DSC/min_faces": min_faces,
             "3DSC/small_tiles": small_mode if min_faces > 0 else "off",
             "3DSC/grid_naming": bool(panel.get("grid_naming", True)),
+            "3DSC/grid": grid_info.get("mode", "north"),
         }
+        if grid_crs is not None:
+            common["3DSC/grid_bearing_deg"] = round(grid_info["bearing"], 4)
+            common["BuildModel/blocks_origin"] = grid_info["origin"]
+            common["BuildModel/blocks_crs"] = "local oblique Mercator, see grid_crs.wkt"
         if srs_origin:
             common["metadata.xml/SRSOrigin"] = list(srs_origin)
         cache = {}
@@ -1577,7 +1657,11 @@ class MetashapeTools:
             small_line = "Tiles under %d faces: %d (%d merged, %d flagged)\n" % (
                 min_faces, len(small_plan["small"]), len(small_plan["merges"]),
                 len(small_plan["flagged"]))
-        message = (
+        grid_line = ""
+        if grid_crs is not None:
+            grid_line = "Grid turned by %.2f° (north grid would need %d cells, this one %d).\n" % (
+                grid_info["bearing"], grid_info["north_cells"], grid_info["cells"])
+        message = grid_line + (
             "STEP2 completed (Block Model, source: %s).\n"
             "Blocks produced: %d, checked distinct; kept: %d\n%s"
             "Output mode: %s\n"
@@ -1600,6 +1684,388 @@ class MetashapeTools:
             "mapping": mapping, "process_id": process_id, "stamps": results,
             "tile_models": {k: m.key for k, m in tile_models.items()},
         }
+
+    # ── the panels (ms_panels) ─────────────────────────────────────────────
+
+    def _panels(self):
+        import importlib
+        here = os.path.dirname(os.path.abspath(ms_blocks.__file__))
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        importlib.invalidate_caches()
+        import ms_panels
+        return ms_panels
+
+    def _need_doc(self):
+        if self.doc is None or not len(self.doc.chunks):
+            ps.app.messageBox("Open a project with at least one chunk first.")
+            return False
+        return True
+
+    def about_panel(self):
+        self._panels().about(__version__)
+
+    def shift_panel(self):
+        P = self._panels()
+        P.ShiftDialog(self, P._parent()).exec_()
+        self.init_gui()
+
+    # master: photos + tie points only, made once, copied for every model
+    def create_master(self, chunk):
+        m = self._copy_master(chunk, keep_cameras=True)
+        m.label = (chunk.label or "chunk") + "_MASTER"
+        m.meta["3dsc_master"] = "1"
+        m.meta["3dsc_master_from"] = chunk.label or ""
+        return m
+
+    def _copy_master(self, chunk, keep_cameras=True):
+        """A copy of ``chunk`` with its photos and tie points only."""
+        DS = ps.DataSource
+        try:
+            new_chunk = chunk.copy(items=[DS.TiePointsData])
+        except Exception:
+            new_chunk = chunk.copy()
+        self._prepare_lightweight_chunk(new_chunk)
+        try:
+            new_chunk.meta["3dsc_master"] = "0"
+        except Exception:
+            pass
+        return new_chunk
+
+    def import_panel(self):
+        if self.doc is None:
+            return
+        P = self._panels()
+        dlg = P.ImportDialog(self, P._parent())
+        if dlg.exec_() != P.QtWidgets.QDialog.Accepted:
+            return
+        o = dlg.options()
+        if not o["paths"]:
+            return
+        try:
+            rep = self.import_models(o["paths"], o["use_shift"], o["one_chunk"], o["master_key"])
+        except Exception as e:
+            ps.app.messageBox(f"Import stopped: {e}")
+            return
+        ps.app.messageBox(rep)
+
+    def import_models(self, paths, use_shift=True, one_chunk=False, master_key=None):
+        """Import models: one chunk per model copied from the master, or all in one."""
+        self.restore_shift_from_doc()
+        shift = self.global_shift_vector if use_shift else None
+        crs = self.global_shift_crs if use_shift else None
+        master = self._get_chunk_by_key(master_key) if master_key is not None else None
+
+        def target(label):
+            if master is not None:
+                c = self._copy_master(master)
+            else:
+                c = self.doc.addChunk()
+            c.label = label
+            return c
+
+        def load(c, path):
+            kw = dict(path=path, format=self._model_format_for(path))
+            if shift is not None:
+                kw["shift"] = shift
+                if crs is not None:
+                    kw["crs"] = crs
+            c.importModel(**kw)
+            m = c.model
+            if m is not None:
+                m.label = os.path.splitext(os.path.basename(path))[0]
+            c.meta["3dsc_imported_from"] = path
+
+        done = []
+        if one_chunk:
+            c = target("Imported_%d_models" % len(paths))
+            for path in paths:
+                load(c, path)
+                done.append(path)
+                ps.app.update()
+        else:
+            for path in paths:
+                c = target(os.path.splitext(os.path.basename(path))[0])
+                load(c, path)
+                self._set_chunk_textured_flag(c, False)
+                done.append(path)
+                ps.app.update()
+        return ("%d models imported %s%s.\n%s" % (
+            len(done), "in one chunk" if one_chunk else "one chunk each",
+            " from the master «%s»" % master.label if master is not None else "",
+            "Shift applied: " + self.get_global_shift_preview() if shift is not None else "No shift."))
+
+    # masters: geometric (the source), texturable, tileable
+    def masters_panel(self):
+        if not self._need_doc():
+            return
+        P = self._panels()
+        dlg = P.MastersDialog(self, P._parent())
+        if dlg.exec_() != P.QtWidgets.QDialog.Accepted:
+            return
+        try:
+            ps.app.messageBox(self.make_masters(dlg.options()))
+        except Exception as e:
+            ps.app.messageBox(f"Masters stopped: {e}")
+
+    def make_masters(self, o):
+        chunk = self._get_chunk_by_key(o["chunk_key"])
+        src = None
+        for m in chunk.models:
+            if m.key == o["model_key"]:
+                src = m
+        if src is None:
+            raise Exception("choose the source model")
+        faces, area, dens = self._mesh_stats(src)
+        if not area:
+            raise Exception("the source model has no area: is the chunk in metres?")
+        lines = []
+        if o["geometric"]:
+            src.label = "M_geometric"
+            src.meta["3dsc_master_level"] = "geometric"
+            src.meta["3dsc_density"] = "%.1f" % dens
+            lines.append("geometric: the source, %s faces (%.0f/m²)" % ("{:,}".format(faces), dens))
+        for level, d in (("texturable", o["texturable"]), ("tileable", o["tileable"])):
+            if not d:
+                continue
+            for m in list(chunk.models):     # re-run: the old master of this level goes
+                try:
+                    if m.key != src.key and m.meta["3dsc_master_level"] == level:
+                        chunk.remove(m)
+                except Exception:
+                    pass
+            n = ms_dd.faces_for(area, d)
+            if n >= faces:
+                lines.append("%s: %d/m² is not below the source (%.0f/m²), not made" % (level, d, dens))
+                continue
+            chunk.model = src
+            before = {k.key for k in chunk.models}
+            chunk.decimateModel(face_count=n, model=src, replace_asset=False)
+            fresh = [k for k in chunk.models if k.key not in before]
+            m = fresh[0] if fresh else chunk.model
+            m.label = "M_%s_%d" % (level, d)
+            m.meta["3dsc_master_level"] = level
+            m.meta["3dsc_density"] = str(d)
+            m.meta["3dsc_master_source"] = src.label or ""
+            lines.append("%s: %s faces (%d/m²)" % (level, "{:,}".format(len(m.faces)), d))
+        chunk.model = src
+        return "Masters of «%s» (%.1f m²):\n%s\n\nNext: Tileset from M_texturable, Blocks from M_tileable." % (
+            chunk.label, area, "\n".join(lines))
+
+    # blocks: STEP2 with the rotated grid
+    def blocks_panel(self):
+        if not self._need_doc():
+            return
+        P = self._panels()
+        dlg = P.BlocksDialog(self, P._parent())
+        if dlg.exec_() != P.QtWidgets.QDialog.Accepted:
+            return
+        panel = dlg.options()
+        chunk = self._get_chunk_by_key(panel["chunk_key"])
+        try:
+            operator = self._ask_operator()
+            report = self.run_step2(self.doc, chunk, panel, operator)
+            ps.app.messageBox(report["message"])
+        except ms_blocks.BlocksRejected as e:
+            ps.app.messageBox("Blocks stopped: they are not distinct pieces of the model.\n\n"
+                              + "\n".join(p[:400] for p in e.problems))
+        except Exception as e:
+            ps.app.messageBox(f"Blocks stopped: {e}")
+
+    # texturing with the Demetrescu-D'Annibale rule
+    def texturing_panel(self):
+        if not self._need_doc():
+            return
+        P = self._panels()
+        dlg = P.TexturingDialog(self, P._parent())
+        if dlg.exec_() != P.QtWidgets.QDialog.Accepted:
+            return
+        o = dlg.options()
+        done = 0
+        for key in o["chunk_keys"]:
+            c = self._get_chunk_by_key(key)
+            if c is None or c.model is None:
+                continue
+            done += self._texturize_chunk_models(c, tex_size=o["atlas"], ratio=o["ratio"],
+                                                 x_res_a_terra=o["texel"], max_pages=o["cap"])
+            ps.app.update()
+        ps.app.messageBox("Textured models: %d (texel %.2f mm, atlas %d, UV ratio %.2f%s)." % (
+            done, o["texel"], o["atlas"], o["ratio"], ", max %d pages" % o["cap"] if o["cap"] else ""))
+
+    def save_subset(self, chunks, path):
+        """A new project holding only ``chunks``; the open one is unchanged."""
+        new_doc = ps.Document()
+        new_doc.append(self.doc, chunks=list(chunks))
+        try:
+            for k in (self.SHIFT_META_LINE, self.SHIFT_META_FILE):
+                new_doc.meta[k] = self.doc.meta[k] or ""
+        except Exception:
+            pass
+        new_doc.save(path)
+
+    # tileset: Cesium 3D Tiles with the screen error, the heights, the check
+    def tileset_panel(self):
+        if not self._need_doc():
+            return
+        P = self._panels()
+        dlg = P.TilesetDialog(self, P._parent())
+        if dlg.exec_() != P.QtWidgets.QDialog.Accepted:
+            return
+        try:
+            ps.app.messageBox(self.export_tileset(dlg.options()))
+        except Exception as e:
+            ps.app.messageBox(f"Tileset stopped: {e}")
+
+    def _geoid_n(self, chunk, xyz):
+        """EGM2008 undulation N at a point of the chunk CRS, if Metashape has
+        the geoid; None otherwise."""
+        try:
+            wgs = ps.CoordinateSystem("EPSG::4326")
+            ll = ps.CoordinateSystem.transform(ps.Vector(list(xyz)), chunk.crs, wgs)
+            egm = ps.CoordinateSystem("EPSG::9518")      # WGS 84 + EGM2008 height
+            h = ps.CoordinateSystem.transform(ps.Vector([ll[0], ll[1], 0.0]), egm, wgs)[2]
+            return h
+        except Exception:
+            return None
+
+    def height_diagnosis(self, chunk):
+        crs = getattr(chunk, "crs", None)
+        if crs is None:
+            return {"text": "local chunk: no height to check.", "suggest": False}
+        if "VERT_CS" in crs.wkt or crs.wkt.startswith("COMPD_CS"):
+            return {"text": "%s has a vertical datum: heights are already orthometric." % crs.name,
+                    "suggest": False}
+        refs = [m for m in chunk.markers if m.reference.location is not None and m.reference.enabled]
+        with_proj = [m for m in refs if len(m.projections.keys())]
+        if not refs:
+            return {"text": "%s has no vertical datum and the chunk has no reference markers: "
+                            "heights are ellipsoidal as they stand." % crs.name, "suggest": False}
+        n = self._geoid_n(chunk, refs[0].reference.location)
+        nn = (" EGM2008 here: N ≈ %.2f m." % n) if n is not None else \
+            " The EGM2008 geoid is not installed in Metashape: give a table of N per marker (JSON), or add the geoid in Preferences."
+        how = ("" if with_proj else " These markers have no projections: the chunk is placed by its "
+               "alignment, the correction comes from the chunk they were measured in.")
+        return {"text": "%s has no vertical datum, and %d markers carry heights: if those are "
+                        "orthometric (levelling, benchmarks), the tileset sits N metres too low.%s%s"
+                        % (crs.name, len(refs), nn, how),
+                "suggest": bool(with_proj), "geoid": n is not None}
+
+    def _correct_heights(self, chunk, n_table=None):
+        """Marker heights onto EGM2008, in memory: returns the undo list.
+        N comes from ``n_table`` ({marker label: N}, the n_egm2008.json of
+        7 Nov 2026) when given, otherwise from Metashape's geoid."""
+        wgs = ps.CoordinateSystem("EPSG::4326")
+        undo = [("transform", chunk, chunk.transform.matrix * ps.Matrix.Diag([1, 1, 1, 1]))]
+        lines = []
+        for m in chunk.markers:
+            loc = m.reference.location
+            if loc is None or not len(m.projections.keys()):
+                continue
+            n = (n_table or {}).get(m.label)
+            if n is None:
+                n = self._geoid_n(chunk, loc)
+            if n is None:
+                continue
+            n = float(n)
+            H = loc[2]
+            delta = ps.CoordinateSystem.transform(ps.Vector([loc[0], loc[1], H]), chunk.crs, wgs)[2] - H
+            undo.append(("marker", m, ps.Vector(loc)))
+            m.reference.location = ps.Vector([loc[0], loc[1], H + n - delta])
+            lines.append({"marker": m.label, "H": H, "N_egm2008": n, "delta_datum": delta})
+        if not lines:
+            raise Exception("no marker could be corrected (no projections, or no geoid)")
+        chunk.updateTransform()
+        return undo, lines
+
+    def _undo(self, undo):
+        for kind, obj, value in reversed(undo):
+            try:
+                if kind == "transform":
+                    obj.transform.matrix = value
+                else:
+                    obj.reference.location = value
+            except Exception as e:
+                print(f"[3DSC tileset] undo failed: {e}")
+
+    def export_tileset(self, o):
+        chunk = self._get_chunk_by_key(o["chunk_key"])
+        if chunk is None:
+            raise Exception("choose a chunk")
+        undo, height_lines = [], []
+        t0 = dtc_stamp_ms.new_process_id()
+        try:
+            if o["fix_heights"]:
+                table = None
+                if o.get("n_file"):
+                    with open(o["n_file"], encoding="utf-8") as fh:
+                        table = json.load(fh)
+                undo, height_lines = self._correct_heights(chunk, table)
+            tiled = None
+            if o["build"]:
+                if chunk.model is None:
+                    raise Exception("no active model to build the tileset from")
+                textured = bool(getattr(chunk.model, "textures", None)) and len(chunk.model.textures) > 0
+                # textured master: its texture is carried over; otherwise the photos texture it
+                chunk.buildTiledModel(source_data=ps.DataSource.ModelData,
+                                      pixel_size=ms_dd.TEXEL_MM / 1000.0, tile_size=256,
+                                      transfer_texture=textured, replace_asset=False)
+                tiled = chunk.tiled_model
+            else:
+                for t in chunk.tiled_models:
+                    if t.key == o["tiled_key"]:
+                        tiled = t
+            if tiled is None:
+                raise Exception("no tiled model in the chunk")
+            fmt = getattr(ps.ImageFormat, "ImageFormat" + o["texture"], ps.ImageFormat.ImageFormatJPEG)
+            path = o["path"]
+            chunk.exportTiledModel(path=path, format=ps.TiledModelFormat.TiledModelFormatCesium,
+                                   texture_format=fmt, tiled_model=tiled,
+                                   model_compression=bool(o["draco"]),
+                                   tileset_version=o["tileset_version"],
+                                   use_tileset_transform=bool(o["use_tileset_transform"]),
+                                   screen_space_error=float(o["screen_space_error"]),
+                                   folder_depth=int(o["folder_depth"]),
+                                   clip_to_boundary=bool(o["clip_to_boundary"]))
+        finally:
+            self._undo(undo)          # the project is never left corrected
+        check = ""
+        try:
+            info = ms_tileset.inspect(path)
+            check = ms_tileset.report(info)
+        except Exception as e:
+            info, check = None, "check not possible: %s" % e
+        params = {"ExportTiledModel/screen_space_error": float(o["screen_space_error"]),
+                  "ExportTiledModel/tileset_version": o["tileset_version"],
+                  "ExportTiledModel/texture_format": o["texture"],
+                  "ExportTiledModel/model_compression": bool(o["draco"]),
+                  "ExportTiledModel/use_tileset_transform": bool(o["use_tileset_transform"]),
+                  "ExportTiledModel/folder_depth": int(o["folder_depth"]),
+                  "ExportTiledModel/clip_to_boundary": bool(o["clip_to_boundary"])}
+        if height_lines:
+            params["3DSC/height_correction"] = height_lines
+        if info:
+            params["3DSC/check"] = {"levels": info["levels"], "primitives_mean": info["primitives_mean"],
+                                    "root": info["root"]}
+        stamp = self._stamp(chunk, tiled, [path] if os.path.isfile(path) else [], self._ask_operator(),
+                            process_id=t0, label=os.path.basename(path), parameters=params)
+        return "Tileset written:\n%s\n\n%s%s\n%s" % (
+            path, check, ("\n\nHeights: %d markers moved onto EGM2008 for this export; the project "
+                          "is back as it was." % len(height_lines)) if height_lines else "",
+            dtc_stamp_ms.report_line(stamp))
+
+    # rename chunks with a pattern
+    def rename_panel(self):
+        if not self._need_doc():
+            return
+        P = self._panels()
+        dlg = P.RenameDialog(self, P._parent())
+        if dlg.exec_() != P.QtWidgets.QDialog.Accepted:
+            return
+        rows = dlg.names()
+        for c, new in rows:
+            c.label = new
+        ps.app.messageBox("Renamed %d chunks." % len(rows))
+
 
     def export_undistorted_images_active_chunk(self):
         try:
@@ -1660,9 +2126,6 @@ class MetashapeTools:
             
         except Exception as e:
             ps.app.messageBox(f"Error: An error occurred: {str(e)}")
-    
-    def lod_generator(self):
-        ps.app.messageBox("Notice - LOD Generator is not fully implemented in the GUI yet.")
     
     def import_ipad_cameras(self):
         """
