@@ -324,10 +324,39 @@ def rename_tiles(folder: str, mapping: Dict[str, str]) -> List[Tuple[str, str]]:
 # ── 3. the small tiles ──────────────────────────────────────────────────────
 
 def bboxes_touch(a, b, tol: float = TOUCH_TOLERANCE) -> bool:
-    """Whether two bboxes touch or overlap in plan (x, y): the cut is a grid in
-    plan, so the neighbours of a tile are its neighbours in x and y."""
-    return (a[0][0] <= b[1][0] + tol and b[0][0] <= a[1][0] + tol
-            and a[0][1] <= b[1][1] + tol and b[0][1] <= a[1][1] + tol)
+    """Whether two bboxes share a SIDE in plan (x, y): they touch along one
+    axis and overlap along the other by more than a sliver. A contact at a
+    corner only (a diagonal neighbour) is not a side. Used only when the tiles
+    carry no grid cell (see :func:`tile_cell`)."""
+    touch_x = a[0][0] <= b[1][0] + tol and b[0][0] <= a[1][0] + tol
+    touch_y = a[0][1] <= b[1][1] + tol and b[0][1] <= a[1][1] + tol
+    if not (touch_x and touch_y):
+        return False
+    ox = min(a[1][0], b[1][0]) - max(a[0][0], b[0][0])
+    oy = min(a[1][1], b[1][1]) - max(a[0][1], b[0][1])
+    side = min(a[1][0] - a[0][0], a[1][1] - a[0][1], b[1][0] - b[0][0], b[1][1] - b[0][1])
+    sliver = max(tol, 0.1 * side)
+    return ox > sliver or oy > sliver
+
+
+def tile_cell(name: str) -> Optional[Tuple[int, int]]:
+    """``(i, j)`` of a tile named by Metashape «Tile i-j» (negative indices too:
+    «Tile -1--2» → (-1, -2)); None for any other name."""
+    base = name.rsplit(".", 1)[0] if name.lower().endswith((".obj", ".ply")) else name
+    if not base.startswith("Tile "):
+        return None
+    body = base[5:]
+    k = body.find("-", 1)
+    while k != -1:
+        try:
+            return int(body[:k]), int(body[k + 1:])
+        except ValueError:
+            k = body.find("-", k + 1)
+    return None
+
+
+def _cells_share_a_side(a, b) -> bool:
+    return any(abs(p[0] - q[0]) + abs(p[1] - q[1]) == 1 for p in a for q in b)
 
 
 def _union(a, b):
@@ -341,14 +370,28 @@ def plan_small_tiles(stats: Sequence[Dict[str, object]], min_faces: int,
 
     The small tiles are taken from the smallest up. In ``merge`` mode each goes
     into the largest tile (faces counted after the merges already planned)
-    whose bbox touches it; one with no neighbour stays, flagged. In ``flag``
-    mode nothing moves. → ``{small, merges: [(small, into)], flagged,
+    that shares a SIDE with it; one with no such neighbour stays, flagged. In
+    ``flag`` mode nothing moves. → ``{small, merges: [(small, into)], flagged,
     faces_after: {name: faces}}``.
+
+    Neighbours come from the grid of the cut: Metashape names every tile by
+    its cell («Tile i-j»), and a tile that absorbed others occupies all their
+    cells, so a merge always yields one contiguous piece. Bounding boxes were
+    used before, and failed twice (Templu Mare, 10 Nov 2026): on a turned grid
+    the boxes, drawn in the chunk's CRS, overlap the diagonal cells; and a box
+    grown by a merge reached tiles farther and farther away, so one block
+    gathered scattered squares. Boxes are still the fallback for tiles with no
+    cell in their name, with corner contacts excluded and no growth.
     """
     if mode not in SMALL_MODES:
         raise ValueError(f"mode must be one of {SMALL_MODES}, got {mode!r}")
-    live = {str(s["name"]): {"faces": int(s.get("faces") or 0), "bbox": s.get("bbox")}
-            for s in stats}
+    live = {}
+    for s in stats:
+        name = str(s["name"])
+        cell = tile_cell(name)
+        live[name] = {"faces": int(s.get("faces") or 0), "bbox": s.get("bbox"),
+                      "cells": {cell} if cell is not None else set()}
+    use_cells = bool(live) and all(v["cells"] for v in live.values())
     small = sorted((n for n, v in live.items() if v["faces"] < min_faces),
                    key=lambda n: (live[n]["faces"], n))
     merges: List[Tuple[str, str]] = []
@@ -359,17 +402,23 @@ def plan_small_tiles(stats: Sequence[Dict[str, object]], min_faces: int,
             continue
         if me["faces"] >= min_faces:
             continue                    # grown past the threshold by a merge
-        if mode == SMALL_FLAG or not me["bbox"]:
+        if mode == SMALL_FLAG or (not use_cells and not me["bbox"]):
             flagged.append(name)
             continue
-        neighbours = [(v["faces"], n) for n, v in live.items()
-                      if n != name and v["bbox"] and bboxes_touch(me["bbox"], v["bbox"])]
+        if use_cells:
+            neighbours = [(v["faces"], n) for n, v in live.items()
+                          if n != name and _cells_share_a_side(me["cells"], v["cells"])]
+        else:
+            neighbours = [(v["faces"], n) for n, v in live.items()
+                          if n != name and v["bbox"] and bboxes_touch(me["bbox"], v["bbox"])]
         if not neighbours:
             flagged.append(name)
             continue
         _, into = max(neighbours)
         live[into]["faces"] += me["faces"]
-        live[into]["bbox"] = _union(live[into]["bbox"], me["bbox"])
+        live[into]["cells"] |= me["cells"]
+        if use_cells and live[into]["bbox"] and me["bbox"]:
+            live[into]["bbox"] = _union(live[into]["bbox"], me["bbox"])   # informative only
         del live[name]
         merges.append((name, into))
     # a merge into a tile that was itself merged later: follow it to the end
@@ -379,7 +428,8 @@ def plan_small_tiles(stats: Sequence[Dict[str, object]], min_faces: int,
             into = dict(merges)[into]
         final[small_name] = into
     return {"small": small, "merges": [(s, final[s]) for s, _ in merges],
-            "flagged": flagged, "faces_after": {n: v["faces"] for n, v in live.items()}}
+            "flagged": flagged, "faces_after": {n: v["faces"] for n, v in live.items()},
+            "neighbours_by": "grid cells" if use_cells else "bounding boxes (sides only)"}
 
 
 def _parse_index(token: bytes, offset: int) -> bytes:
