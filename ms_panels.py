@@ -1041,7 +1041,7 @@ def about(version):
         "Photos → alignment → high mesh, cleaned → masters (geometric · texturable 10 000/m² · "
         "tileable 1 000/m²) → tileset from the texturable, blocks from the tileable → texture, "
         "LODs, normal maps → Blender.<br><br>%s<br><br>%s<br><br>"
-        'Documentation: <a href="https://docs.extendedmatrix.org/projects/3D-survey-collection/en/latest/reference/tools/metashape-tool.html">3DSC for Metashape</a><br>'
+        'Documentation: <a href="https://docs.extendedmatrix.org/projects/3DSC/en/latest/how-to/photogrammetry/prepare-with-metashape.html">3DSC for Metashape</a><br>'
         'Tool page: <a href="https://www.extendedmatrix.org/tools/3dsc-metashape/">extendedmatrix.org/tools/3dsc-metashape</a><br>'
         'Source: <a href="https://github.com/zalmoxes-laran/3DSC_Metashape">github.com/zalmoxes-laran/3DSC_Metashape</a><br>'
         'Extended Matrix: <a href="https://www.extendedmatrix.org">extendedmatrix.org</a>'

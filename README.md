@@ -170,142 +170,53 @@ Common EPSG codes:
 | Georeferenced model (UTM, etc.) | `EPSG::xxxxx` | `EPSG::32633 500000.0 4500000.0 0.0` |
 | Export for GIS software | `EPSG::xxxxx` | `EPSG::3004 1000000.0 2000000.0 0.0` |
 
-### Scripts Supporting SHIFT.txt
+### Where the shift is used
 
-All of these tools support both LOCAL and EPSG coordinate systems:
-
-1. ✅ Import Multiple Models
-2. ✅ Import Single Model with Shift
-3. ✅ Import Tiled Models
-4. ✅ Export Multiple Models
-5. ✅ Export Single Model with Shift
-6. ✅ Export Tiled Models
+Every import and export of the menu uses the shift of the **Shift…** panel, kept in the project; the import panel can turn it off for one import.
 
 ---
 
-## Workflow Examples
+## A typical session
 
-### Example 1: Importing and Texturizing Models
+1. **Operator** once, **Shift** once per project.
+2. Photos aligned, a high mesh built and **cleaned** (trees, scaffolding, noise).
+3. **Masters**: «Measure», read the inventory, «Make what is missing».
+4. **Import › Models › Create master from the active chunk** (photos and tie points only).
+5. **Blocks**: draw a polyline along the walls and select it, «Preview the grid in the view», tick «save as the project grid», Cut — the blocks become models of `<chunk>_blocks`.
+6. Another epoch: the same **Blocks** panel on its chunk, with «Project grid».
+7. **Texturing**: tick the blocks, read the simulation, run.
+8. **LODs + Normal Maps**, then **Export › Blocks**; the tileset from the texturable master with **Tileset**.
 
-**Step 1: Prepare Your Data**
-- Export segmented tiles from Blender using 3DSC
-- Create a folder with your OBJ files
-- Add SHIFT.txt file if needed (see format above)
-
-**Step 2: Import into Metashape**
-1. Open Metashape project with aligned photos and sparse point cloud
-2. **3DSC Metashape Tools > Import > Import Multiple Models**
-3. Select folder containing OBJ files (and SHIFT.txt if present)
-4. Script creates one chunk per tile
-
-**Step 3: Apply Textures**
-1. **3DSC Metashape Tools > Texturing > Texturize Models**
-2. Script automatically calculates optimal texture resolution using the **Demetrescu-d'Annibale formula**:
-   - Standard: 100m² with 6×4096px textures (1.26mm/px)
-   - Extended: Up to 200m² with 12×4096px textures
-
-**Step 4: Rename Chunks (Optional)**
-1. **3DSC Metashape Tools > Utility > Rename Chunks**
-2. Simplifies chunk management with sequential numbering
-
-**Step 5: Export Textured Models**
-1. **3DSC Metashape Tools > Export > Export Multiple Models**
-2. Select destination folder
-3. Add SHIFT.txt if needed (same format as import)
-4. Exports OBJ + MTL + textures
-
-### Example 2: Single Model Workflow
-
-For working with a single model instead of tiles:
-
-1. **Import Single Model with Shift** - Import one model with optional SHIFT
-2. **Texturize Models** - Apply automatic texturing
-3. **Export Single Model with Shift** - Export with preserved coordinates
-
-### Example 3: Tiled Model Workflow
-
-For working with Metashape's tiled models:
-
-1. **Import Tiled Models** - Reimport previously exported tiles
-2. **Export Tiled Models** - Export each tile separately with shift
-
----
-
-## Texture Resolution Formula
-
-The texturing tools use the **Demetrescu-d'Annibale formula** to calculate optimal texture resolution:
-
-```
-N_tex = (10000 / r_texel)² / (t_res² × ratio)
-```
-
-Where:
-- `r_texel` = target resolution in mm/texel (default: 1.26 mm)
-- `t_res` = texture resolution in pixels (default: 4096)
-- `ratio` = surface coverage ratio (default: 0.6)
-
-**Example:** For a 100m² tile:
-- Calculation: `(10000 / 1.26)² / (4096² × 0.6) ≈ 6`
-- Result: **6 textures at 4096×4096 pixels**
-
-### Two Texturing Modes
-
-1. **Standard Mode** (Texturize Models)
-   - Optimal for models up to 100m²
-   - Uses formula directly
-
-2. **Extended Mode** (Texturize Models 200m² limit)
-   - For models up to 200m²
-   - Caps at 12 textures maximum
-   - Prevents excessive texture generation
+Step by step: [Prepare with Metashape](https://docs.extendedmatrix.org/projects/3DSC/en/latest/how-to/photogrammetry/prepare-with-metashape.html).
 
 ---
 
 ## Version History
 
-### Version 1.7.0 (Current)
-- **Version alignment**: numbering realigned with the 3DSC Blender extension (`dsc_tools`)
-- **Global Shift menu**: load a coordinate shift once and reuse it across all import/export operations
-- **Guided Workflow menu**: end-to-end pipeline (STEP1 prepare/flag LOD0 → STEP2 cut mesh into blocks → STEP3 texturize → STEP4 generate LODs + normal maps → STEP5 export), preceded by an optional STEP0 global shift
-- **Cut Giant Mesh into Blocks**: segment a large mesh directly in Metashape via tiled models, one chunk per block
-- **Export Undistorted Images**: export undistorted photos of the active chunk
-- STEP2 blocks checked (no identical blocks), named `block_xNNN_yNNN`, small tiles merged or flagged (`ms_blocks.py`)
-- Every export stamped with dtcstamp 0.1.3, ORCID optional (`dtc_stamp_ms.py`)
+### Unreleased (after 1.7.0)
+- Menu in eight steps with panels; shift and operator kept like settings (the shift in the project, the operator on the computer)
+- Masters as an inventory: what the chunk has and lacks, nothing loaded when the panel opens, decimations confirmed before running
+- Blocks on a grid turned with the monument (line, markers, bearing, mesh), drawn in the view before the cut; one project grid for every epoch; blocks as models of one chunk
+- Texturing one model at a time with the Demetrescu-D'Annibale rule and its simulation (the «200 m²» cap is gone)
+- Tileset export with the screen space error, heights onto EGM2008 for one export, check read from the file
+- Removed: Import Tiled Models, Import Single/Multiple Models (now the Import panel), Texturize 200 m², LOD Generator, the iPad import
 
-### Version 2.1 (legacy numbering)
-- **Single-file architecture**: Consolidated all tools into `3DSC_MS_GUI.py`
-- **LOCAL coordinate support**: Full support for local coordinates without EPSG
-- **Fixed messageBox errors**: All Metashape API calls corrected
-- **Fixed float parsing**: Handles decimal values in SHIFT.txt
-- **iPad feature disabled**: Experimental feature commented out
+### Version 1.7.0
+- Numbering aligned with the 3DSC Blender extension (`dsc_tools`); global shift; guided workflow STEP1–5; STEP2 blocks checked and named; every export stamped (dtcstamp 0.1.3)
 
-### Version 2.0
-- New graphical user interface with organized menu system
-- iPad 3D Scanner App integration (experimental)
-- Extended texture support for models up to 200m²
-- Improved mesh validation and error handling
-- Enhanced tiled model import/export
+### Earlier (2.x legacy numbering)
+- Single-file menu, LOCAL coordinates, SHIFT.txt with decimals
 
 ---
 
 ## File Structure
 
-### Required Files (keep them together)
-- `3DSC_MS_GUI.py` - Main script with the menu
-- `ms_blocks.py` - STEP2 blocks: check, names, small tiles
-- `dtc_stamp_ms.py` + `vendor/dtcstamp.py` - the stamp of every export
-
-### Optional Files
-- `SHIFT.txt` - Coordinate transformation file (placed in same folder as models)
-- `README_SHIFT.md` - Detailed SHIFT.txt documentation
-
-### Legacy Files (Can Be Removed)
-The following individual script files are no longer needed:
-- ~~`import_multiple_models.py`~~
-- ~~`export_multiple_models.py`~~
-- ~~`texturize_it.py`~~
-- ~~`rename_chunks.py`~~
-- ~~Any other individual .py scripts~~
+Keep these files together (Tools › Run Script › `3DSC_MS_GUI.py`):
+- `3DSC_MS_GUI.py` — the menu and the work done in Metashape
+- `ms_panels.py` — the panels (PySide2)
+- `ms_dd.py`, `ms_masters.py`, `ms_grid.py`, `ms_tileset.py`, `ms_blocks.py`, `ms_appender.py` — pure Python, tested without Metashape (`python3 -m unittest discover tests`)
+- `ms_append_ms.py`, `ms_append_gui.py` — photos from another project
+- `dtc_stamp_ms.py` + `vendor/dtcstamp.py` — the stamp of every export
 
 ---
 
@@ -353,21 +264,6 @@ The following individual script files are no longer needed:
 
 ---
 
-## Experimental Features
-
-### iPad AR Camera Import
-
-⚠️ **Currently Disabled** - This feature is experimental and under development.
-
-To enable (advanced users only):
-1. Edit `3DSC_MS_GUI.py`
-2. Uncomment line ~41:
-   ```python
-   ps.app.addMenuItem(label + "/iPad/Import iPad AR Camera Data (EXPERIMENTAL)", self.import_ipad_cameras)
-   ```
-
----
-
 ## Credits and License
 
 **Author:** Emanuel Demetrescu  
@@ -376,7 +272,7 @@ To enable (advanced users only):
 
 **Part of the Extended Matrix Project**
 - Website: https://www.extendedmatrix.org
-- Documentation: https://www.extendedmatrix.org/docs
+- Documentation: https://docs.extendedmatrix.org/projects/3DSC/en/latest/how-to/photogrammetry/prepare-with-metashape.html
 
 ---
 
@@ -384,7 +280,7 @@ To enable (advanced users only):
 
 For issues, questions, or contributions:
 - GitHub Issues: [Create an issue]
-- Documentation: https://www.extendedmatrix.org/docs
+- Documentation: https://docs.extendedmatrix.org/projects/3DSC/en/latest/how-to/photogrammetry/prepare-with-metashape.html
 - Email: emanuel.demetrescu@gmail.com
 
 ---
