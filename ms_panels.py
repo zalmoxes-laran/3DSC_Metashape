@@ -16,6 +16,7 @@ from PySide2 import QtCore, QtWidgets
 
 import ms_dd
 import ms_grid
+import ms_masters
 
 MODEL_EXT = (".obj", ".ply", ".fbx", ".dae", ".stl", ".3ds", ".gltf", ".glb")
 
@@ -97,7 +98,17 @@ def _chunk_by_key(doc, key):
 
 
 def _model_label(m, i):
-    return m.label or ("model %d" % (i + 1))
+    return m.label or ("model %d" % (m.key + 1))
+
+
+class Busy:
+    """The wait cursor around a measure, so nothing looks frozen."""
+    def __enter__(self):
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        QtWidgets.QApplication.processEvents()
+
+    def __exit__(self, *a):
+        QtWidgets.QApplication.restoreOverrideCursor()
 
 
 def is_master(chunk):
@@ -322,82 +333,118 @@ class ImportDialog(QtWidgets.QDialog):
 # ── Masters ──────────────────────────────────────────────────────────────────
 
 class MastersDialog(QtWidgets.QDialog):
+    """What the chunk has and lacks; makes only what is missing, after saying it."""
+
     def __init__(self, tool, parent=None):
         super().__init__(parent)
         self.tool = tool
         doc = tool.doc
+        self.inv = None
         self.setWindowTitle("3DSC · Masters")
-        self.setMinimumWidth(560)
+        self.setMinimumSize(700, 520)
         lay = QtWidgets.QVBoxLayout(self)
-        lay.addWidget(note("Clean the high model first (trees, scaffolding, noise): the lighter "
-                           "masters inherit the cleaning. Re-run after every cleaning."))
+        lay.addWidget(note("Clean the highest model first (trees, scaffolding, noise): the lighter "
+                           "masters are decimated from it and inherit the cleaning."))
         f = QtWidgets.QFormLayout()
-        self.chunk = _chunk_combo(doc, doc.chunk, only_models=True)
-        self.chunk.currentIndexChanged.connect(self.fill_models)
-        self.model = QtWidgets.QComboBox()
-        self.model.currentIndexChanged.connect(self.stats)
-        self.info = QtWidgets.QLabel()
+        self.chunk = _chunk_combo(doc, doc.chunk)
+        self.chunk.currentIndexChanged.connect(self.refresh)
+        self.ref = _chunk_combo(doc, doc.chunk)
+        self.ref.setToolTip("The surface of its mesh is used when this chunk has no mesh yet")
+        self.ref.currentIndexChanged.connect(self.refresh)
         f.addRow("Chunk", self.chunk)
-        f.addRow("Source model", self.model)
-        f.addRow("", self.info)
+        f.addRow("Reference chunk (surface)", self.ref)
+        drow = QtWidgets.QHBoxLayout()
+        self.d_tex = _ispin(ms_dd.DENSITY_TEXTURABLE, 100, 1000000, " /m² texturable")
+        self.d_til = _ispin(ms_dd.DENSITY_TILEABLE, 10, 1000000, " /m² tileable")
+        for w in (self.d_tex, self.d_til):
+            w.valueChanged.connect(self.refresh)
+            drow.addWidget(w)
+        drow.addStretch(1)
+        f.addRow("Densities", drow)
         lay.addLayout(f)
-        g = QtWidgets.QGroupBox("Masters to make (polygons per m² of surface)")
-        gl = QtWidgets.QGridLayout(g)
-        self.d_tex = _ispin(ms_dd.DENSITY_TEXTURABLE, 100, 1000000)
-        self.d_til = _ispin(ms_dd.DENSITY_TILEABLE, 10, 1000000)
-        self.c_geo = QtWidgets.QCheckBox("Geometric super master: the source, above %d/m² (print, archive)"
-                                         % ms_dd.DENSITY_GEOMETRIC)
-        self.c_geo.setChecked(True)
-        self.c_tex = QtWidgets.QCheckBox("Texturable master → tileset, normal maps")
-        self.c_tex.setChecked(True)
-        self.c_til = QtWidgets.QCheckBox("Tileable master = LOD0 → blocks")
-        self.c_til.setChecked(True)
-        gl.addWidget(self.c_geo, 0, 0, 1, 2)
-        gl.addWidget(self.c_tex, 1, 0)
-        gl.addWidget(self.d_tex, 1, 1)
-        gl.addWidget(self.c_til, 2, 0)
-        gl.addWidget(self.d_til, 2, 1)
-        lay.addWidget(g)
-        lay.addWidget(_buttons(self, "Make masters"))
-        self.fill_models()
+        self.table = QtWidgets.QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["Model", "Faces", "Faces/m²", "Texture", "Part in the chain"])
+        self.table.horizontalHeader().setSectionResizeMode(4, QtWidgets.QHeaderView.Stretch)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        lay.addWidget(self.table, 1)
+        mrow = QtWidgets.QHBoxLayout()
+        self.b_measure = QtWidgets.QPushButton("Measure")
+        self.b_measure.clicked.connect(self.measure)
+        self.surface = QtWidgets.QLabel()
+        mrow.addWidget(self.b_measure)
+        mrow.addWidget(self.surface, 1)
+        lay.addLayout(mrow)
+        self.report = QtWidgets.QLabel()
+        self.report.setWordWrap(True)
+        self.report.setTextFormat(QtCore.Qt.RichText)
+        lay.addWidget(self.report)
+        bb = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Close)
+        self.b_make = bb.button(QtWidgets.QDialogButtonBox.Ok)
+        self.b_make.setText("Make what is missing")
+        bb.accepted.connect(self.confirm)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+        self.refresh()
 
-    def _chunk(self):
-        return _chunk_by_key(self.tool.doc, self.chunk.currentData())
+    def _chunk(self, combo):
+        return _chunk_by_key(self.tool.doc, combo.currentData())
 
-    def fill_models(self):
-        self.model.clear()
-        c = self._chunk()
+    def measure(self):
+        c = self._chunk(self.chunk)
         if c is None:
             return
-        for i, m in enumerate(c.models):
-            self.model.addItem(_model_label(m, i), m.key)
-            if c.model is not None and m.key == c.model.key:
-                self.model.setCurrentIndex(i)
-        self.stats()
+        with Busy():
+            self.tool.models_info(c, measure=True)
+            r = self._chunk(self.ref)
+            if r is not None and r.key != c.key and not self.tool._meta_get(r, "3dsc_area_m2") and list(r.models):
+                self.tool.models_info(r, measure=True)
+        self.refresh()
 
-    def _model(self):
-        c = self._chunk()
+    def refresh(self):
+        c = self._chunk(self.chunk)
         if c is None:
-            return None
-        for m in c.models:
-            if m.key == self.model.currentData():
-                return m
-        return None
-
-    def stats(self):
-        faces, area, dens = self.tool._mesh_stats(self._model())
-        if not faces:
-            self.info.setText("")
             return
-        self.info.setText("%s faces · %s m² · %s faces/m²" % (
-            "{:,}".format(faces), "{:,.1f}".format(area or 0), "{:,.0f}".format(dens or 0)))
+        rows, area = self.tool.models_info(c)
+        src = "this chunk"
+        if not area:
+            r = self._chunk(self.ref)
+            if r is not None:
+                area = self.tool._meta_get(r, "3dsc_area_m2")
+                area = float(area) if area else None
+                src = "reference «%s»" % r.label
+        unknown = [r for r in rows if r["faces"] is None]
+        hint = sum(1 for _ in unknown)
+        self.b_measure.setText("Measure" if not unknown and area else
+                               "Measure %d models (a few seconds per 10 M faces)" % max(hint, 1))
+        self.surface.setText("surface %s m² (%s)" % ("{:,.0f}".format(area), src) if area else "surface not measured")
+        self.inv = ms_masters.inventory(rows, area, self.d_tex.value(), self.d_til.value())
+        self.table.setRowCount(len(self.inv["rows"]))
+        for i, r in enumerate(self.inv["rows"]):
+            vals = [ms_masters.name_of(r) if r.get("label") else "model %d" % (r["key"] + 1),
+                    "{:,}".format(r["faces"]) if r["faces"] else "—",
+                    "{:,.0f}".format(r["density"]) if r["density"] else "—",
+                    "yes" if r["textured"] else "", r["role"]]
+            for k, v in enumerate(vals):
+                self.table.setItem(i, k, QtWidgets.QTableWidgetItem(v))
+        self.report.setText("<br>".join(self.inv["lines"]))
+        self.b_make.setEnabled(bool(self.inv["plan"]))
+
+    def confirm(self):
+        plan = self.inv["plan"] if self.inv else []
+        if not plan:
+            return
+        names = {r["key"]: (r.get("label") or "model %d" % (r["key"] + 1)) for r in self.inv["rows"]}
+        text = "\n".join("• %s master, %s/m²: decimate «%s» to %s faces" % (
+            p["level"], "{:,}".format(p["density"]), names.get(p["from"], "?"), "{:,}".format(p["faces"]))
+            for p in plan)
+        if QtWidgets.QMessageBox.question(
+                self, "3DSC", "This will run in Metashape now:\n\n%s\n\nThe source is not changed. Go on?" % text
+        ) == QtWidgets.QMessageBox.Yes:
+            self.accept()
 
     def options(self):
-        return {"chunk_key": self.chunk.currentData(), "model_key": self.model.currentData(),
-                "geometric": self.c_geo.isChecked(),
-                "texturable": self.d_tex.value() if self.c_tex.isChecked() else 0,
-                "tileable": self.d_til.value() if self.c_til.isChecked() else 0}
-
+        return {"chunk_key": self.chunk.currentData(), "plan": self.inv["plan"] if self.inv else []}
 
 # ── Blocks (the grid) ────────────────────────────────────────────────────────
 
@@ -407,13 +454,14 @@ class BlocksDialog(QtWidgets.QDialog):
         self.tool = tool
         doc = tool.doc
         self.setWindowTitle("3DSC · Blocks")
-        self.setMinimumWidth(580)
+        self.setMinimumWidth(640)
         lay = QtWidgets.QVBoxLayout(self)
         lay.addWidget(note("Cut the tileable master (LOD0) into blocks on a grid turned with the "
                            "monument and tight on the mesh. The chunk is never rotated: the grid "
                            "lives only in the cut, and the same settings give the same blocks."))
         f = QtWidgets.QFormLayout()
-        self.chunk = _chunk_combo(doc, doc.chunk, only_models=True)
+        self.chunk = _chunk_combo(doc, doc.chunk)
+        self.chunk.currentIndexChanged.connect(self.fill_markers)
         f.addRow("Chunk (active model)", self.chunk)
         self.area = _dspin(80.0, 1.0, 100000.0, 1, 5.0, " m²")
         self.area.valueChanged.connect(self._side)
@@ -422,25 +470,48 @@ class BlocksDialog(QtWidgets.QDialog):
         arow.addWidget(self.area)
         arow.addWidget(self.side, 1)
         f.addRow("Block plan area", arow)
-        self.r_fit = QtWidgets.QRadioButton("Fit to the mesh (tightest rectangle)")
-        self.r_bear = QtWidgets.QRadioButton("Bearing of the main axis")
-        self.r_north = QtWidgets.QRadioButton("North (Metashape default)")
-        self.r_fit.setChecked(True)
+
+        pg = tool.project_grid()
+        self.r_project = QtWidgets.QRadioButton(
+            "Project grid — same cells in every epoch" + (
+                " (%.2f°, %.2f m, from «%s»)" % (pg["bearing"], pg["side"], pg.get("from_chunk", "")) if pg else
+                " (none yet: tick «save» below on the first cut)"))
+        self.r_project.setEnabled(bool(pg))
+        self.r_line = QtWidgets.QRadioButton("Selected line — draw a polyline along the walls and select it")
+        self.r_mark = QtWidgets.QRadioButton("Two markers along the axis")
+        self.m_a = QtWidgets.QComboBox()
+        self.m_b = QtWidgets.QComboBox()
+        self.r_bear = QtWidgets.QRadioButton("Bearing typed (° clockwise from grid north)")
         self.bearing = _dspin(0.0, -180.0, 180.0, 2, 0.5, "°")
+        self.r_fit = QtWidgets.QRadioButton("Fit to the mesh — tightest rectangle around the footprint "
+                                            "(right for a monument alone, not for a site in its terrain)")
+        self.r_north = QtWidgets.QRadioButton("North (Metashape default)")
+        (self.r_project if pg else self.r_line).setChecked(True)
         ori = QtWidgets.QGridLayout()
-        ori.addWidget(self.r_fit, 0, 0, 1, 2)
-        ori.addWidget(self.r_bear, 1, 0)
-        ori.addWidget(self.bearing, 1, 1)
-        ori.addWidget(self.r_north, 2, 0, 1, 2)
-        f.addRow("Grid", ori)
+        ori.addWidget(self.r_project, 0, 0, 1, 3)
+        ori.addWidget(self.r_line, 1, 0, 1, 3)
+        ori.addWidget(self.r_mark, 2, 0)
+        ori.addWidget(self.m_a, 2, 1)
+        ori.addWidget(self.m_b, 2, 2)
+        ori.addWidget(self.r_bear, 3, 0)
+        ori.addWidget(self.bearing, 3, 1)
+        ori.addWidget(self.r_fit, 4, 0, 1, 3)
+        ori.addWidget(self.r_north, 5, 0, 1, 3)
+        f.addRow("Grid orientation", ori)
         self.preview_lab = QtWidgets.QLabel("")
         self.preview_lab.setWordWrap(True)
-        b = QtWidgets.QPushButton("Preview the grid")
+        b = QtWidgets.QPushButton("Preview the grid in the view")
         b.clicked.connect(self.preview)
+        b2 = QtWidgets.QPushButton("Remove preview")
+        b2.clicked.connect(self.remove_preview)
         prow = QtWidgets.QHBoxLayout()
         prow.addWidget(b)
-        prow.addWidget(self.preview_lab, 1)
+        prow.addWidget(b2)
         f.addRow("", prow)
+        f.addRow("", self.preview_lab)
+        self.save_grid = QtWidgets.QCheckBox("save this grid as the project grid (reuse it on the other epochs)")
+        self.save_grid.setChecked(not pg)
+        f.addRow("", self.save_grid)
         self.min_faces = _ispin(2000, 0, 10000000)
         self.merge = QtWidgets.QCheckBox("merge each one into its largest neighbour (off = only flag)")
         self.merge.setChecked(True)
@@ -448,8 +519,14 @@ class BlocksDialog(QtWidgets.QDialog):
         mrow.addWidget(self.min_faces)
         mrow.addWidget(self.merge, 1)
         f.addRow("Small tiles under (faces)", mrow)
-        self.multi = QtWidgets.QCheckBox("one chunk per block, copied from the master")
-        self.multi.setChecked(True)
+        self.o_models = QtWidgets.QRadioButton("the blocks as models of ONE new chunk, copied from the master")
+        self.o_chunks = QtWidgets.QRadioButton("one chunk per block")
+        self.o_files = QtWidgets.QRadioButton("files only")
+        self.o_models.setChecked(True)
+        out = QtWidgets.QVBoxLayout()
+        for w in (self.o_models, self.o_chunks, self.o_files):
+            out.addWidget(w)
+        f.addRow("Output", out)
         self.master = QtWidgets.QComboBox()
         self.master.addItem("(the source chunk, lightened)", None)
         for c in doc.chunks:
@@ -457,7 +534,6 @@ class BlocksDialog(QtWidgets.QDialog):
                 self.master.addItem(c.label, c.key)
         if self.master.count() > 1:
             self.master.setCurrentIndex(1)
-        f.addRow("Output", self.multi)
         f.addRow("Master", self.master)
         self.out = QtWidgets.QLineEdit()
         b = QtWidgets.QPushButton("…")
@@ -469,6 +545,16 @@ class BlocksDialog(QtWidgets.QDialog):
         lay.addLayout(f)
         lay.addWidget(_buttons(self, "Cut"))
         self._side()
+        self.fill_markers()
+
+    def fill_markers(self):
+        c = _chunk_by_key(self.tool.doc, self.chunk.currentData())
+        for cb in (self.m_a, self.m_b):
+            cb.clear()
+            for m in (c.markers if c is not None else []):
+                cb.addItem(m.label)
+        if self.m_b.count() > 1:
+            self.m_b.setCurrentIndex(1)
 
     def _side(self):
         import math
@@ -480,25 +566,43 @@ class BlocksDialog(QtWidgets.QDialog):
             self.out.setText(d)
 
     def grid(self):
-        if self.r_north.isChecked():
-            return {"mode": "north"}
+        if self.r_project.isChecked():
+            return {"mode": "project"}
+        if self.r_line.isChecked():
+            return {"mode": "line"}
+        if self.r_mark.isChecked():
+            return {"mode": "markers", "a": self.m_a.currentText(), "b": self.m_b.currentText()}
         if self.r_bear.isChecked():
             return {"mode": "bearing", "bearing": self.bearing.value()}
-        return {"mode": "fit"}
+        if self.r_fit.isChecked():
+            return {"mode": "fit"}
+        return {"mode": "north"}
 
     def preview(self):
         import math
         c = _chunk_by_key(self.tool.doc, self.chunk.currentData())
         if c is None or c.model is None:
+            self.preview_lab.setText("the chunk has no active model")
             return
         try:
-            info = self.tool.grid_preview(c, math.sqrt(self.area.value()), self.grid())
+            with Busy():
+                info = self.tool.grid_preview(c, math.sqrt(self.area.value()), self.grid())
         except Exception as e:
             self.preview_lab.setText("no preview: %s" % e)
             return
         self.preview_lab.setText(info["text"])
-        if self.r_fit.isChecked() and info.get("bearing") is not None:
+        if info.get("bearing") is not None and not self.r_project.isChecked():
             self.bearing.setValue(info["bearing"])
+
+    def remove_preview(self):
+        c = _chunk_by_key(self.tool.doc, self.chunk.currentData())
+        if c is not None:
+            n = self.tool.clear_grid_preview(c)
+            self.preview_lab.setText("preview removed (%d cells)" % n)
+
+    def reject(self):
+        self.remove_preview()
+        super().reject()
 
     def accept(self):
         if not self.out.text():
@@ -508,12 +612,13 @@ class BlocksDialog(QtWidgets.QDialog):
 
     def options(self):
         import ms_blocks
+        output = "models" if self.o_models.isChecked() else ("chunks" if self.o_chunks.isChecked() else "files")
         return {"chunk_key": self.chunk.currentData(), "target_area_m2": self.area.value(),
                 "grid": self.grid(), "min_faces": self.min_faces.value(),
                 "small_mode": ms_blocks.SMALL_MERGE if self.merge.isChecked() else ms_blocks.SMALL_FLAG,
-                "output_multi_chunks": self.multi.isChecked(), "master_key": self.master.currentData(),
+                "output": output, "output_multi_chunks": output == "chunks",
+                "master_key": self.master.currentData(), "save_grid": self.save_grid.isChecked(),
                 "export_root": self.out.text(), "run_step2_now": False, "grid_naming": True}
-
 
 # ── Texturing ────────────────────────────────────────────────────────────────
 
@@ -549,13 +654,13 @@ class TexturingDialog(QtWidgets.QDialog):
         self.atlas.currentIndexChanged.connect(self.simulate)
 
         self.table = QtWidgets.QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["Chunk", "Area m²", "Faces", "Pages", "Texel mm", "MB (raw)"])
+        self.table.setHorizontalHeaderLabels(["Chunk · model", "Area m²", "Faces", "Pages", "Texel mm", "MB (raw)"])
         self.table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
         self.table.verticalHeader().setVisible(False)
         lay.addWidget(self.table, 1)
         srow = QtWidgets.QHBoxLayout()
         for text, fn in (("Select all", lambda: self.check_all(True)), ("None", lambda: self.check_all(False)),
-                         ("Untick masters", self.untick_masters)):
+                         ("Untick masters", self.untick_masters), ("Measure", self.measure)):
             b = QtWidgets.QPushButton(text)
             b.clicked.connect(fn)
             srow.addWidget(b)
@@ -575,26 +680,53 @@ class TexturingDialog(QtWidgets.QDialog):
         self.fill()
 
     def fill(self):
+        """One row per model: several models of one chunk are textured one by
+        one (each becomes the active model in turn). Nothing is loaded here:
+        areas are the measured ones (the «Measure» button)."""
         doc = self.tool.doc
         self.rows = []
+        self.table.blockSignals(True)
         self.table.setRowCount(0)
         for c in doc.chunks:
-            m = getattr(c, "model", None)
-            faces, area, _ = self.tool._mesh_stats(m)
-            r = self.table.rowCount()
-            self.table.insertRow(r)
-            it = QtWidgets.QTableWidgetItem(c.label + ("  (master)" if is_master(c) else ""))
-            it.setFlags(QtCore.Qt.ItemIsUserCheckable | QtCore.Qt.ItemIsEnabled)
-            ok = bool(m is not None and area)
-            it.setCheckState(QtCore.Qt.Checked if ok and not is_master(c) else QtCore.Qt.Unchecked)
-            if not ok:
-                it.setFlags(QtCore.Qt.ItemIsEnabled)
-            self.table.setItem(r, 0, it)
-            self.table.setItem(r, 1, QtWidgets.QTableWidgetItem("%.1f" % area if area else "—"))
-            self.table.setItem(r, 2, QtWidgets.QTableWidgetItem("{:,}".format(faces) if faces else "—"))
-            self.rows.append((c.key, area or 0.0, ok, is_master(c)))
+            for m in list(c.models or []):
+                if "_LOD" in (m.label or ""):
+                    continue
+                area = self.tool._meta_get(m, "3dsc_area_m2")
+                faces = self.tool._meta_get(m, "3dsc_faces")
+                area = float(area) if area else None
+                r = self.table.rowCount()
+                self.table.insertRow(r)
+                lab = "%s · %s" % (c.label, m.label or "model %d" % (m.key + 1))
+                it = QtWidgets.QTableWidgetItem(lab + ("  (master)" if is_master(c) else ""))
+                it.setFlags(QtCore.Qt.ItemIsUserCheckable | QtCore.Qt.ItemIsEnabled)
+                block = (m.label or "").startswith("block_") or self.tool._meta_get(c, "3dsc_workflow_block_name")
+                it.setCheckState(QtCore.Qt.Checked if block and area else QtCore.Qt.Unchecked)
+                self.table.setItem(r, 0, it)
+                self.table.setItem(r, 1, QtWidgets.QTableWidgetItem("%.1f" % area if area else "—"))
+                self.table.setItem(r, 2, QtWidgets.QTableWidgetItem("{:,}".format(int(faces)) if faces else "—"))
+                self.rows.append((c.key, m.key, area or 0.0, bool(area), is_master(c)))
+        self.table.blockSignals(False)
+        try:
+            self.table.itemChanged.disconnect()
+        except Exception:
+            pass
         self.table.itemChanged.connect(lambda *_: self.simulate())
         self.simulate()
+
+    def measure(self):
+        """Measure the area of the ticked rows (or all, if none is ticked)."""
+        doc = self.tool.doc
+        ticked = [i for i in range(len(self.rows)) if self.table.item(i, 0).checkState() == QtCore.Qt.Checked]
+        todo = ticked or list(range(len(self.rows)))
+        with Busy():
+            for i in todo:
+                ck, mk = self.rows[i][0], self.rows[i][1]
+                c = _chunk_by_key(doc, ck)
+                m = [k for k in c.models if k.key == mk][0]
+                m.meta["3dsc_area_m2"] = "%.3f" % m.area()
+                m.meta["3dsc_faces"] = str(len(m.faces))
+                QtWidgets.QApplication.processEvents()
+        self.fill()
 
     def params(self):
         return {"texel": self.texel.value(), "atlas": self.atlas.currentData(),
@@ -604,7 +736,7 @@ class TexturingDialog(QtWidgets.QDialog):
         p = self.params()
         tot_pages = tot_mb = n = 0
         self.table.blockSignals(True)
-        for r, (key, area, ok, _m) in enumerate(self.rows):
+        for r, (_ck, _mk, area, ok, _m) in enumerate(self.rows):
             if not ok:
                 for col in (3, 4, 5):
                     self.table.setItem(r, col, QtWidgets.QTableWidgetItem("—"))
@@ -622,25 +754,26 @@ class TexturingDialog(QtWidgets.QDialog):
                 tot_mb += mb
                 n += 1
         self.table.blockSignals(False)
-        self.total.setText("%d chunks · %d pages · %.1f GB raw" % (n, tot_pages, tot_mb / 1000.0))
-        many = len(self.rows) > self.MANY_CHUNKS
+        self.total.setText("%d models · %d pages · %.1f GB raw" % (n, tot_pages, tot_mb / 1000.0))
+        many = len({r[0] for r in self.rows}) > self.MANY_CHUNKS
         self.advice.setText(
             "This project has %d chunks: texturing is lighter in a new project with the reference "
-            "chunk (photos) and the blocks to texture." % len(self.rows) if many else "")
+            "chunk (photos) and the blocks to texture." % len({r[0] for r in self.rows}) if many else "")
         self.b_new.setVisible(many)
 
     def check_all(self, on):
-        for r, (_k, _a, ok, _m) in enumerate(self.rows):
+        for r, (_c, _k, _a, ok, _m) in enumerate(self.rows):
             if ok:
                 self.table.item(r, 0).setCheckState(QtCore.Qt.Checked if on else QtCore.Qt.Unchecked)
 
     def untick_masters(self):
-        for r, (_k, _a, ok, m) in enumerate(self.rows):
+        for r, (_c, _k, _a, ok, m) in enumerate(self.rows):
             if ok and m:
                 self.table.item(r, 0).setCheckState(QtCore.Qt.Unchecked)
 
     def selected_keys(self):
-        return [k for r, (k, _a, ok, _m) in enumerate(self.rows)
+        """[(chunk key, model key)] of the ticked rows."""
+        return [(c, k) for r, (c, k, _a, ok, _m) in enumerate(self.rows)
                 if ok and self.table.item(r, 0).checkState() == QtCore.Qt.Checked]
 
     def new_project(self):
@@ -652,7 +785,7 @@ class TexturingDialog(QtWidgets.QDialog):
         path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "New project", "", "Metashape (*.psx)")
         if not path:
             return
-        keys = set(self.selected_keys())
+        keys = {c for c, _m in self.selected_keys()}
         chunks = [c for c in doc.chunks if c.label == ref or c.key in keys]
         try:
             self.tool.save_subset(chunks, path)
@@ -665,7 +798,7 @@ class TexturingDialog(QtWidgets.QDialog):
 
     def options(self):
         o = self.params()
-        o["chunk_keys"] = self.selected_keys()
+        o["targets"] = self.selected_keys()
         return o
 
 
@@ -786,6 +919,60 @@ class TilesetDialog(QtWidgets.QDialog):
                 "path": self.out.text()}
 
 
+# ── Operator ─────────────────────────────────────────────────────────────
+
+class OperatorDialog(QtWidgets.QDialog):
+    def __init__(self, tool, parent=None):
+        super().__init__(parent)
+        import dtc_stamp_ms as dsm
+        self.dsm = dsm
+        self.tool = tool
+        self.setWindowTitle("3DSC · Operator")
+        self.setMinimumWidth(480)
+        lay = QtWidgets.QVBoxLayout(self)
+        lay.addWidget(note("Who runs the operations: written in the stamp of every export. "
+                           "Set once, remembered on this computer. Empty = anonymous."))
+        f = QtWidgets.QFormLayout()
+        orcid, name = dsm.load_identity(ps.app)
+        self.orcid = QtWidgets.QLineEdit(orcid)
+        self.orcid.setPlaceholderText("0000-0000-0000-0000")
+        self.name = QtWidgets.QLineEdit(name)
+        self.state = QtWidgets.QLabel()
+        self.ask = QtWidgets.QCheckBox("ask again at every export")
+        self.ask.setChecked(str(ps.app.settings.value(tool.SETTINGS_ASK_OPERATOR) or "0") == "1")
+        f.addRow("ORCID iD", self.orcid)
+        f.addRow("Name", self.name)
+        f.addRow("", self.state)
+        f.addRow("", self.ask)
+        lay.addLayout(f)
+        self.orcid.textChanged.connect(self.check)
+        lay.addWidget(_buttons(self, "Save"))
+        self.check()
+
+    def check(self):
+        p = self.dsm.orcid_problem(self.orcid.text().strip())
+        if p == self.dsm.EMPTY:
+            self.state.setText("anonymous: the stamp names the software only")
+        elif p is None:
+            self.state.setText("valid iD")
+        else:
+            self.state.setText("not valid: " + self.dsm.PROBLEM_TEXT[p])
+
+    def accept(self):
+        text = self.orcid.text().strip()
+        p = self.dsm.orcid_problem(text)
+        if p not in (None, self.dsm.EMPTY):
+            QtWidgets.QMessageBox.warning(self, "3DSC", "ORCID iD refused: " + self.dsm.PROBLEM_TEXT[p])
+            return
+        self.dsm.save_identity(self.dsm.normalize_orcid(text) if text else "", self.name.text().strip(), ps.app)
+        ps.app.settings.setValue(self.tool.SETTINGS_ASK_OPERATOR, "1" if self.ask.isChecked() else "0")
+        try:
+            ps.app.settings.save()
+        except Exception:
+            pass
+        super().accept()
+
+
 # ── Rename ───────────────────────────────────────────────────────────────────
 
 class RenameDialog(QtWidgets.QDialog):
@@ -854,6 +1041,9 @@ def about(version):
         "Photos → alignment → high mesh, cleaned → masters (geometric · texturable 10 000/m² · "
         "tileable 1 000/m²) → tileset from the texturable, blocks from the tileable → texture, "
         "LODs, normal maps → Blender.<br><br>%s<br><br>%s<br><br>"
-        '<a href="https://www.extendedmatrix.org">extendedmatrix.org</a>'
+        'Documentation: <a href="https://docs.extendedmatrix.org/projects/3D-survey-collection/en/latest/reference/tools/metashape-tool.html">3DSC for Metashape</a><br>'
+        'Tool page: <a href="https://www.extendedmatrix.org/tools/3dsc-metashape/">extendedmatrix.org/tools/3dsc-metashape</a><br>'
+        'Source: <a href="https://github.com/zalmoxes-laran/3DSC_Metashape">github.com/zalmoxes-laran/3DSC_Metashape</a><br>'
+        'Extended Matrix: <a href="https://www.extendedmatrix.org">extendedmatrix.org</a>'
         % (version, ms_dd.RULE_LINE, "<br>".join(ms_dd.BIBLIOGRAPHY)))
     box.exec_()

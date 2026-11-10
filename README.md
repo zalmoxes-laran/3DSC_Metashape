@@ -16,16 +16,23 @@ Two words are kept apart: a **block** is a piece of mesh physically cut (one fil
 ## The menu
 
 **3DSC Metashape Tools**
+0. **Operator (ORCID)…** — who runs the operations, set once and remembered on this computer (like the shift); written in the stamp of every export. Optionally asked again at every export.
 1. **Shift…** — load SHIFT.txt, see the file and the numbers, clear. The shift is saved **in the project** (`doc.meta`) and comes back with the .psx.
 2. **Import ›** **Models…** (files or a folder, shift on/off, one chunk per model copied from the **master**, or all in one chunk) · **Photos from Another Project…**
-3. **Masters…** — the three masters from the cleaned source model, as models of the same chunk (`M_geometric`, `M_texturable_<d>`, `M_tileable_<d>`).
+3. **Masters…** — an **inventory** first: every model of the chunk with its faces, density and part in the chain, what is missing and from which model it can be decimated. Nothing is computed when the panel opens: «Measure» counts the faces and measures the surface once (on the lightest model; 40.9 M faces take about 13 s), and keeps the numbers in the model's meta. «Make what is missing» lists the exact decimations and asks before running them.
 4. **Blocks…** — the cut of the tileable master on a grid **turned with the monument** and tight on the mesh (see below), with the checks of `ms_blocks`.
-5. **Texturing…** — the Demetrescu-D'Annibale rule on the ticked chunks, with a live simulation (pages, texel, memory) and the reference.
+5. **Texturing…** — the Demetrescu-D'Annibale rule, **one row per model** (several models of a chunk are textured one by one), with a live simulation (pages, texel, memory) and the reference.
 6. **LODs + Normal Maps** (blocks).
 7. **Tileset…** — Cesium 3D Tiles (.3tz or folder) with the **screen space error** chosen (desktop 16 / web 24 / mobile 32), version, KTX2/JPEG, Draco, heights onto EGM2008 for that export only, and a check read from the written file.
 8. **Export ›** blocks, models, active model with shift, undistorted images.
 - **Utility ›** Rename Chunks (pattern `{n}`, `{name}`, `{model}`; the names become file names) · Flag LOD0 (old STEP1).
-- **About · Rule and References.**
+- **Help ›** Documentation of 3DSC for Metashape · About · Rule and References.
+
+### The inventory of the masters
+
+Rules: the highest model is the master to **clean** (trees, scaffolding, noise) — every lighter master is decimated from it. Above the texturable density it is the geometric super master (also for print). When no model reaches the texturable density, the highest is **kept for the tileset**: decimation removes detail, it never adds it. LOD0 is made only from a denser model. With no mesh yet, the surface of a reference chunk gives the target face counts.
+
+On Templu Mare 2015 (40.9 M, 6.3 M and 0.6 M faces on about 6 040 m²) it reads: keep the 40.9 M model for the tileset and clean it; the 6.3 M model is already LOD0 (1 041/m²); the 0.6 M model is lighter than LOD0; nothing to make.
 
 ### The master
 
@@ -33,7 +40,23 @@ A copy of the photo chunk with **photos and tie points only** (*Import › Model
 
 ### Blocks on a rotated grid
 
-Metashape's Block Model lays its grid in the CRS, i.e. on the north. 3DSC hands the cut a **local oblique Mercator** centred on the site, scale 1, whose grid is turned by the monument's bearing (`buildModel(blocks_crs=…, blocks_origin=…)`, Metashape 2.3.2; Metashape calls the projection `Oblique_Mercator`, EPSG 9815). The bearing is found from the tightest rectangle around the mesh, or typed; the grid is centred on the mesh with as few cells as its extent needs.
+Metashape's Block Model lays its grid in the CRS, i.e. on the north. 3DSC hands the cut a **local oblique Mercator** centred on the site, scale 1, whose grid is turned by the monument's bearing (`buildModel(blocks_crs=…, blocks_origin=…)`, Metashape 2.3.2; Metashape calls the projection `Oblique_Mercator`, EPSG 9815). The bearing comes from, in order of preference:
+- the **project grid** (see below);
+- a **line drawn** along the walls (Draw Polyline, then select it);
+- **two markers** along the axis;
+- a bearing typed;
+- **fit to the mesh**: the tightest rectangle around the mesh footprint — right for a monument alone, not for a site surrounded by terrain, where the terrain decides the rectangle;
+- north.
+
+**Preview the grid in the view** draws the cells that hold mesh as orange shapes (group «3DSC grid preview»), with the bearing, where it comes from and the count against a north grid; «Remove preview», Cancel and the cut take it away.
+
+### More epochs, one grid
+
+The first cut can be saved as the **project grid** (`doc.meta["3dsc_grid"]`: the grid CRS, origin, side, bearing). Cutting another chunk — another epoch or hypothesis of the same site — on the project grid gives **the same cells the same names**: `block_x003_y002` is the same piece of ground in 2013 and in 2015. Measured on two synthetic epochs (the second covering half the site): six blocks of 2013, each in the place of its namesake of 2015.
+
+### Blocks as models
+
+By default the blocks become **models of one new chunk** per epoch, copied from the master: no copy of the photos for every block. Metashape 2.3 textures several models of one chunk one by one (each made active in turn): measured on Templu Mare 2015, two pieces textured in 26 s and 16 s, each kept its own texture, and the models already there were untouched. One chunk per block is still offered, and files only. The intermediate block models Metashape leaves in the source chunk are removed after the cut.
 
 The **chunk is never touched**: its CRS and transform stay as they are, nothing rotated is ever saved, and the same bearing gives the same cut. The block files are then exported again by Metashape in the chunk's CRS with a `metadata.xml` like the one of a north cut, plus `grid_crs.wkt`: from there on a rotated cut is the same folder as a north one.
 

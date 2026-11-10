@@ -22,6 +22,7 @@ import dtc_stamp_ms
 import ms_dd
 import ms_grid
 import ms_tileset
+import ms_masters
 
 
 class MetashapeTools:
@@ -56,6 +57,7 @@ class MetashapeTools:
         # One entry per step of the chain (see README, «The chain»).
         self.restore_shift_from_doc()
         L = label + "/"
+        ps.app.addMenuItem(L + "0 · Operator (ORCID)…   [" + self.operator_preview() + "]", self.operator_panel)
         ps.app.addMenuItem(L + "1 · Shift…   [" + self.get_global_shift_preview(compact=True) + "]", self.shift_panel)
         ps.app.addMenuItem(L + "2 · Import/Models…", self.import_panel)
         ps.app.addMenuItem(L + "2 · Import/Photos from Another Project…", self.append_photos_from_project)
@@ -70,7 +72,8 @@ class MetashapeTools:
         ps.app.addMenuItem(L + "8 · Export/Undistorted Images (active chunk)", self.export_undistorted_images_active_chunk)
         ps.app.addMenuItem(L + "Utility/Rename Chunks…", self.rename_panel)
         ps.app.addMenuItem(L + "Utility/Flag LOD0 (old STEP1)", self.prepare_or_flag_lod0)
-        ps.app.addMenuItem(L + "About · Rule and References", self.about_panel)
+        ps.app.addMenuItem(L + "Help/Documentation of 3DSC for Metashape", self.open_docs)
+        ps.app.addMenuItem(L + "Help/About · Rule and References", self.about_panel)
 
     @property
     def doc(self):
@@ -307,10 +310,24 @@ class MetashapeTools:
 
     # ── the stamp of every export (dtc_stamp_ms) ───────────────────────────
 
-    def _ask_operator(self):
-        """«ORCID (optional)»: the declared operator of this export, or None
-        (anonymous). A failing dialog never stops the export."""
+    SETTINGS_ASK_OPERATOR = "3dsc_metashape/ask_operator"
+
+    def operator_preview(self):
         try:
+            orcid, name = dtc_stamp_ms.load_identity(ps.app)
+        except Exception:
+            orcid, name = "", ""
+        return (name + " " + orcid).strip() if orcid else "anonymous"
+
+    def _ask_operator(self):
+        """The declared operator of this export, or None (anonymous): the one
+        set in «Operator», asked again only when that panel says so. A failing
+        dialog never stops the export."""
+        try:
+            ask = str(ps.app.settings.value(self.SETTINGS_ASK_OPERATOR) or "0") == "1"
+            orcid, name = dtc_stamp_ms.load_identity(ps.app)
+            if not ask:
+                return dtc_stamp_ms.declared_operator(orcid, name) if orcid else None
             return dtc_stamp_ms.ask_operator(ps.app)
         except Exception as e:
             print(f"[3DSC stamp] operator not asked: {e}")
@@ -385,8 +402,9 @@ class MetashapeTools:
                 return mt
         return chunk.transform.matrix
 
-    def _mesh_xy(self, chunk, crs, limit=20000, model=None):
-        """Up to ``limit`` vertices of ``model`` (default: the active one), as (x, y) in ``crs``."""
+    def _mesh_xyz(self, chunk, limit=20000, model=None):
+        """Up to ``limit`` vertices of ``model`` (default: the active one), as
+        (x, y, z) in the chunk's CRS."""
         model = model if model is not None else chunk.model
         verts = model.vertices
         n = len(verts)
@@ -395,51 +413,253 @@ class MetashapeTools:
         out = []
         for i in range(0, n, step):
             q = chunk.crs.project(T.mulp(verts[i].coord))
-            out.append((q[0], q[1]))
+            out.append((q[0], q[1], q[2]))
         return out
+
+    def _mesh_xy(self, chunk, crs, limit=20000, model=None):
+        return [(x, y) for x, y, _z in self._mesh_xyz(chunk, limit, model)]
+
+    # measures kept in the meta, so a panel opens without loading meshes
+    # (40.9 M faces: 5.6 s to count, 7 s for the area — Templu Mare, 10 Nov)
+    def _meta_get(self, holder, key):
+        try:
+            if key in holder.meta.keys():
+                return holder.meta[key]
+        except Exception:
+            pass
+        return None
+
+    def models_info(self, chunk, measure=False):
+        """→ (rows, area_m2): every model of ``chunk`` with its faces (cached
+        or measured), label and texture; the chunk's surface, measured once on
+        its lightest model."""
+        rows = []
+        for m in list(chunk.models or []):
+            f = self._meta_get(m, "3dsc_faces")
+            if measure or f is None:
+                if measure:
+                    f = len(m.faces)
+                    m.meta["3dsc_faces"] = str(f)
+                    ps.app.update()
+            try:
+                tex = len(m.textures) > 0
+            except Exception:
+                tex = False
+            rows.append({"key": m.key, "label": m.label or "", "faces": int(f) if f else None,
+                         "textured": tex, "level": self._meta_get(m, "3dsc_master_level") or ""})
+        area = self._meta_get(chunk, "3dsc_area_m2")
+        if measure and rows:
+            known = [r for r in rows if r["faces"]]
+            if known:
+                light = min(known, key=lambda r: r["faces"])
+                model = [m for m in chunk.models if m.key == light["key"]][0]
+                area = model.area()
+                chunk.meta["3dsc_area_m2"] = "%.3f" % area
+        return rows, (float(area) if area else None)
+
+    def model_name(self, row):
+        base = row.get("label") or "model %d" % (row["key"] + 1)
+        if row.get("faces"):
+            base += " · %s faces" % "{:,}".format(row["faces"]).replace(",", "\u202f")
+        return base
+
+    # the orientation of the grid: what the bearing is measured from
+    def _selected_line(self, chunk):
+        """The first selected shape of the chunk, as its two farthest-apart
+        ends (x, y) in the chunk CRS: the line drawn along the monument's axis."""
+        shapes = getattr(chunk, "shapes", None)
+        if not shapes:
+            raise Exception("draw a line along the axis (Draw Polyline) and select it")
+        for sh in shapes:
+            if not getattr(sh, "selected", False):
+                continue
+            g = sh.geometry
+            coords = g.coordinates
+            if coords and isinstance(coords[0], (list, tuple)) and coords and not hasattr(coords[0], "x"):
+                coords = coords[0]                       # a polygon: its outer ring
+            pts = []
+            for v in coords:
+                v = ps.Vector(list(v)) if not isinstance(v, ps.Vector) else v
+                if shapes.crs is not None and chunk.crs is not None and shapes.crs.wkt != chunk.crs.wkt:
+                    v = ps.CoordinateSystem.transform(v, shapes.crs, chunk.crs)
+                pts.append((v[0], v[1]))
+            if len(pts) >= 2:
+                if len(pts) == 2:
+                    return pts[0], pts[1]
+                best = max(((a, b) for a in pts for b in pts), key=lambda ab: (ab[0][0] - ab[1][0]) ** 2 + (ab[0][1] - ab[1][1]) ** 2)
+                return best
+        raise Exception("no selected shape: draw a line along the axis (Draw Polyline) and select it")
+
+    def _marker_xy(self, chunk, label):
+        for m in chunk.markers:
+            if m.label == label:
+                if m.position is not None:
+                    q = chunk.crs.project(chunk.transform.matrix.mulp(m.position))
+                    return (q[0], q[1])
+                if m.reference.location is not None:
+                    return (m.reference.location[0], m.reference.location[1])
+        raise Exception("marker %s has no position" % label)
+
+    def project_grid(self):
+        """The grid saved in the project (doc.meta), or None."""
+        raw = self._meta_get(self.doc, "3dsc_grid")
+        try:
+            return json.loads(raw) if raw else None
+        except ValueError:
+            return None
+
+    def save_project_grid(self, info, side, chunk):
+        self.doc.meta["3dsc_grid"] = json.dumps({
+            "wkt": info["wkt"], "origin": info["origin"][:2], "side": side,
+            "bearing": info["bearing"], "true_bearing": info["true_bearing"],
+            "from_chunk": chunk.label or "", "mode": info["mode"]})
 
     def _grid_for(self, chunk, side, grid):
         """→ (blocks_crs, blocks_origin, info) for ``grid`` = {"mode": "north" |
-        "fit" | "bearing", "bearing": deg}; (None, None, info) for north.
-        The bearing is measured in the chunk's own map grid; the local oblique
-        Mercator is then re-aimed once to absorb the meridian convergence."""
+        "fit" | "bearing" | "line" | "markers" | "project", ...}; (None, None,
+        info) for north. Every bearing is measured in the chunk's own map
+        grid; the local oblique Mercator is re-aimed to absorb the meridian
+        convergence. ``info`` also lists the cells that hold mesh."""
         mode = (grid or {}).get("mode", "north")
         crs = getattr(chunk, "crs", None)
-        if mode == "north":
-            return None, None, {"mode": "north"}
+        if mode == "north" and (crs is None or chunk.model is None or "PROJCS" not in crs.wkt):
+            return None, None, {"mode": "north", "cells_list": [], "cells": 0, "north_cells": 0,
+                                "origin": [0.0, 0.0], "z": 0.0, "bearing": 0.0}
         if crs is None or chunk.model is None:
-            raise Exception("A rotated grid needs a georeferenced chunk with an active model.")
+            raise Exception("the grid needs a georeferenced chunk with an active model")
+        pts3 = self._mesh_xyz(chunk)
+        pts = [(x, y) for x, y, _z in pts3]
+        zs = sorted(z for _x, _y, z in pts3)
+        z_mid = zs[len(zs) // 2] if zs else 0.0
+        if mode == "north":
+            ox = math.floor(min(p[0] for p in pts) / side) * side
+            oy = math.floor(min(p[1] for p in pts) / side) * side
+            cells = sorted({(int(math.floor((x - ox) / side)), int(math.floor((y - oy) / side))) for x, y in pts})
+            return None, None, {"mode": "north", "cells_list": cells, "cells": len(cells),
+                                "origin": [ox, oy], "z": z_mid, "bearing": 0.0, "north_cells": len(cells)}
         if "PROJCS" not in crs.wkt:
-            raise Exception("A rotated grid needs a projected CRS (metres), not %s." % crs.name)
-        pts = self._mesh_xy(chunk, crs)
-        bearing = ms_grid.fit_bearing(pts) if mode == "fit" else ms_grid.reduce_bearing(float(grid.get("bearing", 0.0)))
-        xs = [p[0] for p in pts]
-        ys = [p[1] for p in pts]
-        cx, cy = (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
-        cz = 0.0
-        geog = crs.geogcs
-        ll = ps.CoordinateSystem.transform(ps.Vector([cx, cy, cz]), crs, geog)
-        import math
-        b = math.radians(bearing)
-        p0 = ps.Vector([cx, cy, cz])
-        p1 = ps.Vector([cx + 10.0 * math.sin(b), cy + 10.0 * math.cos(b), cz])
-        aim = bearing
-        for _ in range(2):
+            raise Exception("a rotated grid needs a projected CRS (metres), not %s" % crs.name)
+        why = ""
+        if mode == "project":
+            pg = self.project_grid()
+            if not pg:
+                raise Exception("no project grid saved yet")
+            gcrs = ps.CoordinateSystem(pg["wkt"])
+            origin = (float(pg["origin"][0]), float(pg["origin"][1]))
+            side = float(pg["side"])
+            bearing, aim = float(pg["bearing"]), float(pg["true_bearing"])
+            why = "the project grid (from «%s»)" % pg.get("from_chunk", "")
+        else:
+            if mode == "fit":
+                bearing = ms_grid.fit_bearing(pts)
+                why = "the tightest rectangle around the mesh footprint"
+            elif mode == "line":
+                a, b = self._selected_line(chunk)
+                bearing = ms_grid.reduce_bearing(ms_grid.bearing_of(a, b))
+                why = "the selected line"
+            elif mode == "markers":
+                a = self._marker_xy(chunk, grid["a"])
+                b = self._marker_xy(chunk, grid["b"])
+                bearing = ms_grid.reduce_bearing(ms_grid.bearing_of(a, b))
+                why = "markers %s → %s" % (grid["a"], grid["b"])
+            else:
+                bearing = ms_grid.reduce_bearing(float(grid.get("bearing", 0.0)))
+                why = "the bearing typed"
+            xs = [p[0] for p in pts]
+            ys = [p[1] for p in pts]
+            cx, cy = (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
+            geog = crs.geogcs
+            ll = ps.CoordinateSystem.transform(ps.Vector([cx, cy, 0.0]), crs, geog)
+            b = math.radians(bearing)
+            p0 = ps.Vector([cx, cy, 0.0])
+            p1 = ps.Vector([cx + 10.0 * math.sin(b), cy + 10.0 * math.cos(b), 0.0])
+            aim = bearing
+            for _ in range(2):
+                gcrs = ps.CoordinateSystem(ms_grid.oblique_wkt(geog.wkt, ll[1], ll[0], aim))
+                q0 = ps.CoordinateSystem.transform(p0, crs, gcrs)
+                q1 = ps.CoordinateSystem.transform(p1, crs, gcrs)
+                aim += ms_grid.bearing_of((q0[0], q0[1]), (q1[0], q1[1]))
             gcrs = ps.CoordinateSystem(ms_grid.oblique_wkt(geog.wkt, ll[1], ll[0], aim))
-            q0 = ps.CoordinateSystem.transform(p0, crs, gcrs)
-            q1 = ps.CoordinateSystem.transform(p1, crs, gcrs)
-            aim += ms_grid.bearing_of((q0[0], q0[1]), (q1[0], q1[1]))
-        gcrs = ps.CoordinateSystem(ms_grid.oblique_wkt(geog.wkt, ll[1], ll[0], aim))
+            origin = None
         gpts = []
         for x, y in pts:
-            q = ps.CoordinateSystem.transform(ps.Vector([x, y, cz]), crs, gcrs)
+            q = ps.CoordinateSystem.transform(ps.Vector([x, y, z_mid]), crs, gcrs)
             gpts.append((q[0], q[1]))
-        lay = ms_grid.layout(gpts, side)
-        north = ms_grid.layout(pts, side)
-        info = {"mode": mode, "bearing": bearing, "true_bearing": aim, "cells": lay["cells"],
-                "nx": lay["nx"], "ny": lay["ny"], "north_cells": north["cells"],
-                "origin": list(lay["origin"]), "wkt": gcrs.wkt}
-        return gcrs, ps.Vector([lay["origin"][0], lay["origin"][1], 0.0]), info
+        if origin is None:
+            origin = ms_grid.layout(gpts, side)["origin"]
+        cells = sorted({(int(math.floor((x - origin[0]) / side)), int(math.floor((y - origin[1]) / side)))
+                        for x, y in gpts})
+        nox = math.floor(min(p[0] for p in pts) / side) * side
+        noy = math.floor(min(p[1] for p in pts) / side) * side
+        north = {(int(math.floor((x - nox) / side)), int(math.floor((y - noy) / side))) for x, y in pts}
+        info = {"mode": mode, "why": why, "bearing": bearing, "true_bearing": aim, "side": side,
+                "cells": len(cells), "cells_list": cells, "north_cells": len(north),
+                "origin": [origin[0], origin[1]], "wkt": gcrs.wkt, "z": z_mid}
+        return gcrs, ps.Vector([origin[0], origin[1], 0.0]), info
+
+    # the preview: the cells drawn as shapes in the chunk, a group of their own
+    PREVIEW_GROUP = "3DSC grid preview"
+
+    def clear_grid_preview(self, chunk):
+        shapes = getattr(chunk, "shapes", None)
+        if not shapes:
+            return 0
+        groups = [g for g in shapes.groups if g.label == self.PREVIEW_GROUP]
+        if not groups:
+            return 0
+        keys = {g.key for g in groups}
+        doomed = [sh for sh in shapes if sh.group is not None and sh.group.key in keys]
+        shapes.remove(doomed)
+        try:
+            shapes.remove(groups)
+        except Exception:
+            for g in groups:
+                try:
+                    shapes.remove(g)
+                except Exception:
+                    pass
+        return len(doomed)
+
+    def draw_grid_preview(self, chunk, side, grid):
+        """Draw the cells that will become blocks; → info with a text line."""
+        gcrs, _o, info = self._grid_for(chunk, side, grid)
+        side = info.get("side", side)
+        self.clear_grid_preview(chunk)
+        if chunk.shapes is None:
+            chunk.shapes = ps.Shapes()
+            chunk.shapes.crs = chunk.crs
+        shapes = chunk.shapes
+        grp = shapes.addGroup()
+        grp.label = self.PREVIEW_GROUP
+        try:
+            grp.color = (255, 120, 0)
+        except Exception:
+            pass
+        ox, oy = info["origin"]
+        z = info["z"]
+        i0 = min(c[0] for c in info["cells_list"])
+        j0 = min(c[1] for c in info["cells_list"])
+        for (i, j) in info["cells_list"]:
+            ring = []
+            for (dx, dy) in ((0, 0), (1, 0), (1, 1), (0, 1), (0, 0)):
+                v = ps.Vector([ox + (i + dx) * side, oy + (j + dy) * side, z])
+                if gcrs is not None:
+                    v = ps.CoordinateSystem.transform(v, gcrs, chunk.crs)
+                if shapes.crs is not None and shapes.crs.wkt != chunk.crs.wkt:
+                    v = ps.CoordinateSystem.transform(v, chunk.crs, shapes.crs)
+                ring.append(v)
+            sh = shapes.addShape()
+            sh.group = grp
+            sh.label = ms_blocks.grid_name((i - i0 + 1, j - j0 + 1))[6:]
+            try:
+                sh.geometry = ps.Geometry.LineString(ring)
+            except Exception:
+                sh.geometry = ps.Geometry.Polygon(ring)
+        info["text"] = ("%s: %d cells hold mesh (north grid: %d)%s" % (
+            "north grid" if info["mode"] == "north" else "bearing %.2f° from %s" % (info["bearing"], info["why"]),
+            info["cells"], info["north_cells"],
+            "" if info["mode"] == "north" else ". The orange grid is in the view (group «%s»)." % self.PREVIEW_GROUP))
+        return info
 
     def _georef_rotated_blocks(self, chunk, source_model, files, folder, tile_models=None):
         """Bring the files of a rotated cut into the chunk's CRS.
@@ -489,16 +709,9 @@ class MetashapeTools:
         return origin
 
     def grid_preview(self, chunk, side, grid):
-        """What the cut will be, without cutting: for the Blocks panel."""
-        _g, _o, info = self._grid_for(chunk, side, grid)
-        if info["mode"] == "north":
-            pts = self._mesh_xy(chunk, chunk.crs)
-            lay = ms_grid.layout(pts, side)
-            return {"text": "north grid: about %d × %d = %d cells" % (lay["nx"], lay["ny"], lay["cells"]),
-                    "bearing": None}
-        return {"text": "bearing %.2f° · %d × %d = %d cells (north grid: %d)" % (
-            info["bearing"], info["nx"], info["ny"], info["cells"], info["north_cells"]),
-            "bearing": info["bearing"]}
+        """What the cut will be, drawn in the view, without cutting."""
+        info = self.draw_grid_preview(chunk, side, grid)
+        return {"text": info["text"], "bearing": info.get("bearing")}
 
     def _build_block_model_and_collect(self, chunk, target_area_m2, blocks_folder, grid=None):
         """Build a Metashape **Block Model** (mesh built already split into
@@ -994,12 +1207,32 @@ class MetashapeTools:
                 raise Exception("No source chunk available for STEP4.")
 
             created = 0
+            if mode == "models_chunk":
+                for bc in self._get_workflow_chunks():
+                    for m in [k for k in bc.models if (k.label or "").startswith("block_") and "_LOD" not in (k.label or "")]:
+                        n0 = len(m.faces)
+                        for lod_name, ratio in [("LOD1", ratio1), ("LOD2", ratio2)]:
+                            before = {k.key for k in bc.models}
+                            try:
+                                bc.decimateModel(face_count=int(max(500, n0 * ratio)), model=m, replace_asset=False)
+                            except Exception as dec_err:
+                                print(f"LOD warning - {m.label}: {dec_err}")
+                                continue
+                            fresh = [k for k in bc.models if k.key not in before]
+                            if fresh:
+                                fresh[0].label = f"{m.label}_{lod_name}"
+                                fresh[0].meta["3dsc_lod_of"] = m.label
+                                created += 1
+                            ps.app.update()
+                        bc.model = m
+                ps.app.messageBox(f"LODs made: {created} models (LOD1 {ratio1:g}, LOD2 {ratio2:g} of each block).")
+                return
             for source_chunk in source_chunks:
                 if not source_chunk.model:
                     continue
 
-                base_area = source_chunk.model.area() if source_chunk.model else 0.0
-                base_faces = int(max(1000, base_area * 10000)) if base_area else 100000
+                # the LODs are fractions of the block's own faces (it is LOD0)
+                base_faces = len(source_chunk.model.faces) if source_chunk.model else 100000
 
                 for lod_name, ratio in [("LOD1", ratio1), ("LOD2", ratio2)]:
                     lod_chunk = source_chunk.copy()
@@ -1139,8 +1372,8 @@ class MetashapeTools:
                     for idx, model in enumerate(models):
                         if not self._activate_model(chunk, model):
                             continue
-                        block_name = f"block_{idx:04d}"
-                        if idx < len(block_defs):
+                        block_name = model.label or f"block_{idx:04d}"
+                        if not model.label and idx < len(block_defs):
                             block_name = block_defs[idx]["name"]
                         out_path = os.path.join(export_folder, block_name + ".obj")
                         kwargs = dict(
@@ -1458,6 +1691,12 @@ class MetashapeTools:
         the grid names, the chunks, the stamps. → a report (dict, with the
         ``message`` the menu shows). Raises ``ms_blocks.BlocksRejected`` when
         the blocks are not distinct pieces of the model."""
+        if (panel.get("grid") or {}).get("mode") == "project" and self.project_grid():
+            panel["target_area_m2"] = float(self.project_grid()["side"]) ** 2
+        try:
+            self.clear_grid_preview(chunk)
+        except Exception:
+            pass
         target_area_m2 = panel["target_area_m2"]
         output_multi_chunks = panel["output_multi_chunks"]
         export_root = panel["export_root"]
@@ -1490,6 +1729,8 @@ class MetashapeTools:
                           if m.key not in keys_before and m.label}
             self._georef_rotated_blocks(chunk, source_model, [b["obj_path"] for b in cut_blocks],
                                         blocks_folder, new_models)
+            if panel.get("save_grid") and grid_info.get("mode") != "project":
+                self.save_project_grid(grid_info, side, chunk)
         if not cut_blocks:
             sample = "\n".join(os.path.basename(p) for p in produced[:30]) or "(no files)"
             raise Exception(
@@ -1516,10 +1757,12 @@ class MetashapeTools:
         mapping = {s["name"]: s["name"] for s in stats}
         if panel.get("grid_naming", True) and grid_crs is not None:
             # rotated grid: the cut's own cell «Tile i-j», counted from 1
+            # counted from the grid origin: with the project grid, the same cell
+            # has the same name in every epoch
             cells = {s["name"]: ms_grid.cell_of(s["name"]) for s in stats}
             if all(cells.values()):
-                i0 = min(c[0] for c in cells.values())
-                j0 = min(c[1] for c in cells.values())
+                i0 = min(0, min(c[0] for c in cells.values()))
+                j0 = min(0, min(c[1] for c in cells.values()))
                 mapping = {n: ms_blocks.grid_name((c[0] - i0 + 1, c[1] - j0 + 1)) for n, c in cells.items()}
         elif panel.get("grid_naming", True):
             origin = ms_blocks.cut_grid_origin(stats, side, srs_origin)
@@ -1564,7 +1807,37 @@ class MetashapeTools:
             })
 
         generated_chunk_keys = []
-        if output_multi_chunks:
+        if panel.get("output") == "models":
+            master = self._get_chunk_by_key(panel.get("master_key")) if panel.get("master_key") else None
+            if master is not None:
+                bc = self._copy_master(master)
+            else:
+                bc = chunk.copy()
+                self._prepare_lightweight_chunk(bc)
+            bc.label = f"{safe_label}_blocks"
+            bc.meta["3dsc_blocks_of"] = chunk.label or ""
+            for block in cut_blocks:
+                before = {m.key for m in bc.models}
+                self._import_block(bc, block["obj_path"], srs_origin)
+                fresh = [m for m in bc.models if m.key not in before]
+                if fresh:
+                    fresh[0].label = block["name"]
+                    fresh[0].meta["3dsc_block"] = block["name"]
+                    fresh[0].meta["3dsc_tile_source_name"] = block["source_name"]
+                    fresh[0].meta["3dsc_faces"] = str(block["faces"])
+                    try:
+                        fresh[0].meta["3dsc_area_m2"] = "%.3f" % fresh[0].area()
+                    except Exception:
+                        pass
+                ps.app.update()
+            self._set_chunk_textured_flag(bc, False)
+            self.workflow_state["cut_mode"] = "models_chunk"
+            self.workflow_state["generated_chunk_keys"] = [self._chunk_key(bc)]
+            output_multi_chunks = False
+            self.workflow_state["cut_blocks"] = cut_blocks
+            self.workflow_state["cut_folder"] = blocks_folder
+            self.workflow_state["cut_source_chunk_key"] = self._chunk_key(bc)
+        elif output_multi_chunks:
             # Re-import each block as its own chunk (copies the source chunk
             # so cameras/depth maps travel with it for STEP3 texturing).
             master = self._get_chunk_by_key(panel.get("master_key")) if panel.get("master_key") else None
@@ -1590,9 +1863,10 @@ class MetashapeTools:
             self.workflow_state["cut_mode"] = "files_only"
             self.workflow_state["generated_chunk_keys"] = []
 
-        self.workflow_state["cut_blocks"] = cut_blocks
-        self.workflow_state["cut_folder"] = blocks_folder
-        self.workflow_state["cut_source_chunk_key"] = self._chunk_key(chunk)
+        if panel.get("output") != "models":
+            self.workflow_state["cut_blocks"] = cut_blocks
+            self.workflow_state["cut_folder"] = blocks_folder
+            self.workflow_state["cut_source_chunk_key"] = self._chunk_key(chunk)
 
         # 4. the stamps: one act, one process_id for every file of the cut
         process_id = dtc_stamp_ms.new_process_id()
@@ -1646,7 +1920,26 @@ class MetashapeTools:
                 dtc_kind=dtc_stamp_ms.KIND_TILING, technique=technique, parameters=common,
                 label="metadata.xml of the blocks", cache=cache)
 
-        if output_multi_chunks:
+        # the block models Metashape left in the source chunk: once the blocks
+        # live in their own chunk(s), they would only be duplicates
+        if panel.get("output") in ("models", "chunks") or output_multi_chunks:
+            gone = [m for m in tile_models.values() if m is not None]
+            for m in list(chunk.models):
+                if m.label in mapping.values() and m not in gone:
+                    gone.append(m)
+            for m in gone:
+                try:
+                    chunk.remove(m)
+                except Exception:
+                    pass
+            if source_model is not None:
+                try:
+                    chunk.model = source_model
+                except Exception:
+                    pass
+        if panel.get("output") == "models":
+            tail = "The blocks are models of the chunk «%s_blocks». Next: Texturing." % safe_label
+        elif output_multi_chunks:
             tail = "Next: run STEP3 texturing, then STEP5 export."
         else:
             tail = ("Open a few block files to confirm they are distinct spatial "
@@ -1671,7 +1964,8 @@ class MetashapeTools:
                 produced_count,
                 len(cut_blocks),
                 small_line,
-                "one chunk per block" if output_multi_chunks else "files only (no import)",
+                {"models": "the blocks as models of one chunk", "chunks": "one chunk per block"}.get(
+                    panel.get("output"), "one chunk per block" if output_multi_chunks else "files only (no import)"),
                 blocks_folder,
                 dtc_stamp_ms.report_line(results),
                 tail,
@@ -1702,8 +1996,23 @@ class MetashapeTools:
             return False
         return True
 
+    DOCS_URL = "https://docs.extendedmatrix.org/projects/3D-survey-collection/en/latest/reference/tools/metashape-tool.html"
+    TOOL_URL = "https://www.extendedmatrix.org/tools/3dsc-metashape/"
+
     def about_panel(self):
         self._panels().about(__version__)
+
+    def open_docs(self):
+        try:
+            from PySide2 import QtCore, QtGui
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl(self.DOCS_URL))
+        except Exception:
+            ps.app.messageBox("Documentation: " + self.DOCS_URL)
+
+    def operator_panel(self):
+        P = self._panels()
+        P.OperatorDialog(self, P._parent()).exec_()
+        self.init_gui()
 
     def shift_panel(self):
         P = self._panels()
@@ -1803,56 +2112,42 @@ class MetashapeTools:
         dlg = P.MastersDialog(self, P._parent())
         if dlg.exec_() != P.QtWidgets.QDialog.Accepted:
             return
+        o = dlg.options()
+        if not o["plan"]:
+            return
         try:
-            ps.app.messageBox(self.make_masters(dlg.options()))
+            ps.app.messageBox(self.make_masters(o))
         except Exception as e:
             ps.app.messageBox(f"Masters stopped: {e}")
 
     def make_masters(self, o):
+        """Make what the inventory says is missing: ``o["plan"]`` from ms_masters."""
         chunk = self._get_chunk_by_key(o["chunk_key"])
-        src = None
-        for m in chunk.models:
-            if m.key == o["model_key"]:
-                src = m
-        if src is None:
-            raise Exception("choose the source model")
-        faces, area, dens = self._mesh_stats(src)
-        if not area:
-            raise Exception("the source model has no area: is the chunk in metres?")
+        models = {m.key: m for m in chunk.models}
         lines = []
-        if o["geometric"]:
-            src.label = "M_geometric"
-            src.meta["3dsc_master_level"] = "geometric"
-            src.meta["3dsc_density"] = "%.1f" % dens
-            lines.append("geometric: the source, %s faces (%.0f/m²)" % ("{:,}".format(faces), dens))
-        for level, d in (("texturable", o["texturable"]), ("tileable", o["tileable"])):
-            if not d:
+        for step in o["plan"]:
+            src = models.get(step["from"])
+            if src is None:
                 continue
-            for m in list(chunk.models):     # re-run: the old master of this level goes
-                try:
-                    if m.key != src.key and m.meta["3dsc_master_level"] == level:
-                        chunk.remove(m)
-                except Exception:
-                    pass
-            n = ms_dd.faces_for(area, d)
-            if n >= faces:
-                lines.append("%s: %d/m² is not below the source (%.0f/m²), not made" % (level, d, dens))
-                continue
-            chunk.model = src
+            for m in list(chunk.models):     # a re-run replaces the old master of this level
+                if self._meta_get(m, "3dsc_master_level") == step["level"]:
+                    chunk.remove(m)
             before = {k.key for k in chunk.models}
-            chunk.decimateModel(face_count=n, model=src, replace_asset=False)
+            chunk.model = src
+            chunk.decimateModel(face_count=int(step["faces"]), model=src, replace_asset=False)
             fresh = [k for k in chunk.models if k.key not in before]
             m = fresh[0] if fresh else chunk.model
-            m.label = "M_%s_%d" % (level, d)
-            m.meta["3dsc_master_level"] = level
-            m.meta["3dsc_density"] = str(d)
-            m.meta["3dsc_master_source"] = src.label or ""
-            lines.append("%s: %s faces (%d/m²)" % (level, "{:,}".format(len(m.faces)), d))
-        chunk.model = src
-        return "Masters of «%s» (%.1f m²):\n%s\n\nNext: Tileset from M_texturable, Blocks from M_tileable." % (
-            chunk.label, area, "\n".join(lines))
+            m.label = "M_%s_%d" % (step["level"], step["density"])
+            m.meta["3dsc_master_level"] = step["level"]
+            m.meta["3dsc_density"] = str(step["density"])
+            m.meta["3dsc_master_source"] = src.label or "model %d" % (src.key + 1)
+            m.meta["3dsc_faces"] = str(len(m.faces))
+            lines.append("%s: %s faces from «%s»" % (m.label, m.meta["3dsc_faces"],
+                                                     m.meta["3dsc_master_source"]))
+            ps.app.update()
+            chunk.model = src
+        return "Masters of «%s»:\n%s" % (chunk.label, "\n".join(lines) or "nothing made")
 
-    # blocks: STEP2 with the rotated grid
     def blocks_panel(self):
         if not self._need_doc():
             return
@@ -1881,16 +2176,40 @@ class MetashapeTools:
         if dlg.exec_() != P.QtWidgets.QDialog.Accepted:
             return
         o = dlg.options()
-        done = 0
-        for key in o["chunk_keys"]:
-            c = self._get_chunk_by_key(key)
-            if c is None or c.model is None:
+        done, lines = 0, []
+        for ck, mk in o["targets"]:
+            c = self._get_chunk_by_key(ck)
+            m = [k for k in (c.models if c else []) if k.key == mk]
+            if not m:
                 continue
-            done += self._texturize_chunk_models(c, tex_size=o["atlas"], ratio=o["ratio"],
-                                                 x_res_a_terra=o["texel"], max_pages=o["cap"])
+            res = self.texture_model(c, m[0], o["texel"], o["atlas"], o["ratio"], o["cap"])
+            lines.append("%s · %s: %d pages, texel %.2f mm" % (c.label, m[0].label or m[0].key,
+                                                                res["pages"], res["texel"]))
+            done += 1
             ps.app.update()
-        ps.app.messageBox("Textured models: %d (texel %.2f mm, atlas %d, UV ratio %.2f%s)." % (
-            done, o["texel"], o["atlas"], o["ratio"], ", max %d pages" % o["cap"] if o["cap"] else ""))
+        ps.app.messageBox("Textured models: %d (texel %.2f mm, atlas %d, UV ratio %.2f%s).\n\n%s" % (
+            done, o["texel"], o["atlas"], o["ratio"], ", max %d pages" % o["cap"] if o["cap"] else "",
+            "\n".join(lines[:30])))
+
+    def texture_model(self, chunk, model, texel=ms_dd.TEXEL_MM, atlas=ms_dd.ATLAS_PX,
+                      ratio=ms_dd.UV_RATIO, cap=None):
+        """One model of a chunk, textured with the D-D rule: it becomes the
+        active model, gets its own UV pages and texture; the others keep theirs."""
+        chunk.model = model
+        area = model.area()
+        sim = ms_dd.simulate(area, texel, atlas, ratio, cap)
+        pages = sim["pages_cap"] if sim["over"] else sim["pages"]
+        got = sim["texel_cap"] if sim["over"] else sim["texel"]
+        chunk.buildUV(mapping_mode=ps.GenericMapping, page_count=pages, texture_size=atlas)
+        chunk.buildTexture(blending_mode=ps.MosaicBlending, texture_size=atlas,
+                           fill_holes=True, ghosting_filter=True)
+        model.meta["3dsc_dd"] = json.dumps({
+            "area_m2": round(area, 3), "pages": pages, "rule_pages": sim["pages"],
+            "texel_mm": round(got, 4), "texel_target_mm": texel, "atlas_px": atlas, "uv_ratio": ratio,
+            "reference": "Demetrescu et al. 2026, Remote Sensing 18, 203, Eq. 1"})
+        model.meta["3dsc_area_m2"] = "%.3f" % area
+        self._set_chunk_textured_flag(chunk, True)
+        return {"pages": pages, "texel": got}
 
     def save_subset(self, chunks, path):
         """A new project holding only ``chunks``; the open one is unchanged."""
