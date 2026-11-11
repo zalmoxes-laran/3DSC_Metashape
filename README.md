@@ -48,6 +48,8 @@ Metashape's Block Model lays its grid in the CRS, i.e. on the north. 3DSC hands 
 - **fit to the mesh**: the tightest rectangle around the mesh footprint — right for a monument alone, not for a site surrounded by terrain, where the terrain decides the rectangle;
 - north.
 
+**Small tiles**: a tile covering less than 33 % of the block area (default; or a value in m², or faces) joins a tile that shares a side with it, the cell next door first — never a diagonal one, so every merged block is one piece.
+
 **Preview the grid in the view** draws the cells that hold mesh as orange shapes (group «3DSC grid preview»), with the bearing, where it comes from and the count against a north grid; «Remove preview», Cancel and the cut take it away.
 
 ### More epochs, one grid

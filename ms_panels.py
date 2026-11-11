@@ -512,13 +512,24 @@ class BlocksDialog(QtWidgets.QDialog):
         self.save_grid = QtWidgets.QCheckBox("save this grid as the project grid (reuse it on the other epochs)")
         self.save_grid.setChecked(not pg)
         f.addRow("", self.save_grid)
-        self.min_faces = _ispin(2000, 0, 10000000)
-        self.merge = QtWidgets.QCheckBox("merge each one into its largest neighbour (off = only flag)")
-        self.merge.setChecked(True)
+        # a tile covering little ground joins a neighbour that shares a side
+        self.small_by = QtWidgets.QComboBox()
+        self.small_by.addItem("% of the block area", "percent")
+        self.small_by.addItem("m² of ground", "area")
+        self.small_by.addItem("faces", "faces")
+        self.small_val = _dspin(33.0, 0.0, 99.0, 1, 1.0)
+        self.small_eq = QtWidgets.QLabel()
+        self.small_by.currentIndexChanged.connect(self._small_kind)
+        self.small_val.valueChanged.connect(self._small_eq)
+        self.area.valueChanged.connect(self._small_eq)
         mrow = QtWidgets.QHBoxLayout()
-        mrow.addWidget(self.min_faces)
-        mrow.addWidget(self.merge, 1)
-        f.addRow("Small tiles under (faces)", mrow)
+        mrow.addWidget(self.small_val)
+        mrow.addWidget(self.small_by)
+        mrow.addWidget(self.small_eq, 1)
+        f.addRow("Small tiles under", mrow)
+        self.merge = QtWidgets.QCheckBox("merge each one into its largest neighbour on a side (off = only flag)")
+        self.merge.setChecked(True)
+        f.addRow("", self.merge)
         self.o_models = QtWidgets.QRadioButton("the blocks as models of ONE new chunk, copied from the master")
         self.o_chunks = QtWidgets.QRadioButton("one chunk per block")
         self.o_files = QtWidgets.QRadioButton("files only")
@@ -545,7 +556,43 @@ class BlocksDialog(QtWidgets.QDialog):
         lay.addLayout(f)
         lay.addWidget(_buttons(self, "Cut"))
         self._side()
+        self._small_kind()
         self.fill_markers()
+
+    def _small_kind(self):
+        kind = self.small_by.currentData()
+        self.small_val.blockSignals(True)
+        if kind == "percent":
+            self.small_val.setRange(0.0, 99.0)
+            self.small_val.setDecimals(1)
+            self.small_val.setSuffix(" %")
+            self.small_val.setValue(33.0)
+        elif kind == "area":
+            self.small_val.setRange(0.0, max(0.1, self.area.value() - 0.1))
+            self.small_val.setDecimals(1)
+            self.small_val.setSuffix(" m²")
+            self.small_val.setValue(round(self.area.value() * 0.33, 1))
+        else:
+            self.small_val.setRange(0, 10000000)
+            self.small_val.setDecimals(0)
+            self.small_val.setSuffix(" faces")
+            self.small_val.setValue(2000)
+        self.small_val.blockSignals(False)
+        self._small_eq()
+
+    def _small_eq(self):
+        kind = self.small_by.currentData()
+        a = self.area.value()
+        if kind == "area":
+            self.small_val.setMaximum(max(0.1, a - 0.1))
+            v = self.small_val.value()
+            self.small_eq.setText("= %.0f %% of %.1f m²" % (100.0 * v / a, a) if a else "")
+        elif kind == "percent":
+            self.small_eq.setText("= %.1f m² of ground" % (a * self.small_val.value() / 100.0))
+        else:
+            self.small_eq.setText("whatever the ground they cover")
+        if not self.small_val.value():
+            self.small_eq.setText("off: every tile kept as cut")
 
     def fill_markers(self):
         c = _chunk_by_key(self.tool.doc, self.chunk.currentData())
@@ -614,7 +661,8 @@ class BlocksDialog(QtWidgets.QDialog):
         import ms_blocks
         output = "models" if self.o_models.isChecked() else ("chunks" if self.o_chunks.isChecked() else "files")
         return {"chunk_key": self.chunk.currentData(), "target_area_m2": self.area.value(),
-                "grid": self.grid(), "min_faces": self.min_faces.value(),
+                "grid": self.grid(), "small_by": self.small_by.currentData(),
+                "small_value": self.small_val.value(),
                 "small_mode": ms_blocks.SMALL_MERGE if self.merge.isChecked() else ms_blocks.SMALL_FLAG,
                 "output": output, "output_multi_chunks": output == "chunks",
                 "master_key": self.master.currentData(), "save_grid": self.save_grid.isChecked(),

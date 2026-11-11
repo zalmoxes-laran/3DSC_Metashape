@@ -1354,9 +1354,26 @@ class MetashapeTools:
         target_area_m2 = panel["target_area_m2"]
         output_multi_chunks = panel["output_multi_chunks"]
         export_root = panel["export_root"]
-        min_faces = int(panel.get("min_faces", ms_blocks.DEFAULT_MIN_FACES) or 0)
         small_mode = panel.get("small_mode", ms_blocks.SMALL_MERGE)
         side = max(0.1, math.sqrt(max(0.01, target_area_m2)))
+        # the small tiles: by plan area (a share of the block, or m²) or by faces
+        small_by = panel.get("small_by", "faces" if "min_faces" in panel else "percent")
+        small_value = float(panel.get("small_value", panel.get("min_faces", ms_blocks.DEFAULT_SMALL_PERCENT)) or 0)
+        min_faces, min_area = 0, None
+        if small_by == "percent":
+            if not 0 <= small_value < 100:
+                raise Exception("the share of the block must be between 0 and 100 %")
+            min_area = side * side * small_value / 100.0 if small_value > 0 else None
+        elif small_by == "area":
+            if not 0 <= small_value < side * side:
+                raise Exception("the small-tile area must be between 0 and the block area (%.1f m²)" % (side * side))
+            min_area = small_value if small_value > 0 else None
+        else:
+            min_faces = int(small_value)
+        small_on = bool(min_area) or min_faces > 0
+        small_rule = ("plan area under %.2f m² (%s)" % (
+            min_area, "%g %% of %.1f m²" % (small_value, side * side) if small_by == "percent" else "set in m²")
+            if min_area else ("fewer than %d faces" % min_faces if min_faces else "off"))
 
         chunk_label = chunk.label if chunk.label else "active_chunk"
         safe_label = "".join(c if c.isalnum() or c in ('_', '-', '.') else '_' for c in chunk_label)
@@ -1425,8 +1442,8 @@ class MetashapeTools:
         # 3. the small tiles: merged into a neighbour, or flagged
         small_plan = {"small": [], "merges": [], "flagged": []}
         merge_lines = []
-        if min_faces > 0:
-            small_plan = ms_blocks.plan_small_tiles(stats, min_faces, small_mode)
+        if small_on:
+            small_plan = ms_blocks.plan_small_tiles(stats, min_faces, small_mode, min_area=min_area)
             if small_plan["merges"]:
                 merge_lines = ms_blocks.apply_small_tiles(blocks_folder, small_plan)
                 gone = {s for s, _ in small_plan["merges"]}
@@ -1533,8 +1550,8 @@ class MetashapeTools:
             "BuildModel/replace_asset": False,
             "BuildModel/source_data": source_used,
             "3DSC/target_area_m2": float(target_area_m2),
-            "3DSC/min_faces": min_faces,
-            "3DSC/small_tiles": small_mode if min_faces > 0 else "off",
+            "3DSC/small_tile_rule": small_rule,
+            "3DSC/small_tiles": small_mode if small_on else "off",
             "3DSC/grid_naming": bool(panel.get("grid_naming", True)),
             "3DSC/grid": grid_info.get("mode", "north"),
         }
@@ -1553,7 +1570,7 @@ class MetashapeTools:
             if block["merged_from"]:
                 params["3DSC/merged_from"] = block["merged_from"]
             if block["source_name"] in flagged:
-                params["3DSC/under_min_faces"] = True
+                params["3DSC/small_tile"] = True
             tile_model = tile_models.get(block["name"]) or tile_models.get(block["source_name"])
             sources = [tile_models[n] for n in block["merged_from"] if n in tile_models]
             if source_model is not None:
@@ -1600,9 +1617,9 @@ class MetashapeTools:
                     "pieces, then re-run with 'one chunk per block' (or clean them "
                     "in Blender first).")
         small_line = ""
-        if min_faces > 0:
-            small_line = "Tiles under %d faces: %d (%d merged, %d flagged)\n" % (
-                min_faces, len(small_plan["small"]), len(small_plan["merges"]),
+        if small_on:
+            small_line = "Small tiles (%s): %d (%d merged, %d flagged)\n" % (
+                small_rule, len(small_plan["small"]), len(small_plan["merges"]),
                 len(small_plan["flagged"]))
         grid_line = ""
         if grid_crs is not None:

@@ -43,6 +43,10 @@ MAX_FACES_RATIO = 1.5
 #: the proposed threshold for a tile too small to stand alone (STEP2 dialog)
 DEFAULT_MIN_FACES = 2000
 
+#: a tile is small when its plan area is under this share of the block's area
+#: (E.D., 11 Nov 2026: 80 m² blocks, a 20 m² tile joins a neighbour)
+DEFAULT_SMALL_PERCENT = 33.0
+
 #: what to do with a tile under the threshold
 SMALL_MERGE = "merge"
 SMALL_FLAG = "flag"
@@ -81,7 +85,12 @@ class GridCollision(Exception):
 # ── reading a tile ──────────────────────────────────────────────────────────
 
 def obj_stats(path: str) -> Dict[str, object]:
-    """Faces, vertices, bbox and content digest of an OBJ, read in one pass.
+    """Faces, vertices, bbox, plan area and content digest of an OBJ, in one pass.
+
+    ``plan_area`` is the area of the faces projected on the plan (x, y), in the
+    square units of the file: the ground a tile really covers, whatever its
+    number of polygons (vertical walls count nothing, a slope counts its
+    footprint).
 
     The digest is the sha256 of every line but ``mtllib``: renaming a tile
     rewrites that line and nothing else, and the 32 identical blocks of
@@ -90,6 +99,8 @@ def obj_stats(path: str) -> Dict[str, object]:
     """
     sha = hashlib.sha256()
     faces = vertices = 0
+    xy = []
+    plan2 = 0.0
     lo = [math.inf, math.inf, math.inf]
     hi = [-math.inf, -math.inf, -math.inf]
     with open(path, "rb") as fh:
@@ -106,11 +117,24 @@ def obj_stats(path: str) -> Dict[str, object]:
                         lo[i] = c
                     if c > hi[i]:
                         hi[i] = c
+                xy.append((float(parts[1]), float(parts[2])))
             elif line.startswith(b"f "):
                 faces += 1
+                try:
+                    ids = []
+                    for corner in line.split()[1:]:
+                        k = int(corner.split(b"/")[0])
+                        ids.append(k - 1 if k > 0 else len(xy) + k)
+                    ax, ay = xy[ids[0]]
+                    for a, b in zip(ids[1:-1], ids[2:]):
+                        bx, by = xy[a]
+                        cx, cy = xy[b]
+                        plan2 += abs((bx - ax) * (cy - ay) - (cx - ax) * (by - ay))
+                except (ValueError, IndexError):
+                    pass
     bbox = (tuple(lo), tuple(hi)) if vertices else None
     return {"path": path, "name": os.path.splitext(os.path.basename(path))[0],
-            "faces": faces, "vertices": vertices, "bbox": bbox,
+            "faces": faces, "vertices": vertices, "bbox": bbox, "plan_area": plan2 / 2.0,
             "digest": "sha256:" + sha.hexdigest()}
 
 
@@ -364,9 +388,13 @@ def _union(a, b):
             tuple(max(a[1][i], b[1][i]) for i in range(3)))
 
 
-def plan_small_tiles(stats: Sequence[Dict[str, object]], min_faces: int,
-                     mode: str = SMALL_MERGE) -> Dict[str, object]:
-    """What happens to the tiles under ``min_faces``, decided on the stats.
+def plan_small_tiles(stats: Sequence[Dict[str, object]], min_faces: int = 0,
+                     mode: str = SMALL_MERGE, min_area: Optional[float] = None) -> Dict[str, object]:
+    """What happens to the small tiles, decided on the stats.
+
+    A tile is small when its ``plan_area`` is under ``min_area`` (m²; the
+    default rule of the Blocks panel, a share of the block's area), or, when
+    ``min_area`` is not given, when it has fewer faces than ``min_faces``.
 
     The small tiles are taken from the smallest up. In ``merge`` mode each goes
     into the largest tile (faces counted after the merges already planned)
@@ -374,7 +402,10 @@ def plan_small_tiles(stats: Sequence[Dict[str, object]], min_faces: int,
     ``flag`` mode nothing moves. → ``{small, merges: [(small, into)], flagged,
     faces_after: {name: faces}}``.
 
-    Neighbours come from the grid of the cut: Metashape names every tile by
+    Neighbours come from the grid of the cut, the cell next door first (a tile
+    whose own cell shares the side), then a tile reached through cells it has
+    absorbed; among them the largest (by plan area under the area rule, by
+    faces otherwise). Metashape names every tile by
     its cell («Tile i-j»), and a tile that absorbed others occupies all their
     cells, so a merge always yields one contiguous piece. Bounding boxes were
     used before, and failed twice (Templu Mare, 10 Nov 2026): on a turned grid
@@ -390,32 +421,46 @@ def plan_small_tiles(stats: Sequence[Dict[str, object]], min_faces: int,
         name = str(s["name"])
         cell = tile_cell(name)
         live[name] = {"faces": int(s.get("faces") or 0), "bbox": s.get("bbox"),
+                      "area": float(s.get("plan_area") or 0.0), "own": cell,
                       "cells": {cell} if cell is not None else set()}
+
+    def is_small(v):
+        if min_area is not None:
+            return v["area"] < min_area
+        return v["faces"] < min_faces
+
     use_cells = bool(live) and all(v["cells"] for v in live.values())
-    small = sorted((n for n, v in live.items() if v["faces"] < min_faces),
-                   key=lambda n: (live[n]["faces"], n))
+    by = (lambda n: (live[n]["area"], n)) if min_area is not None else (lambda n: (live[n]["faces"], n))
+    small = sorted((n for n, v in live.items() if is_small(v)), key=by)
     merges: List[Tuple[str, str]] = []
     flagged: List[str] = []
     for name in small:
         me = live.get(name)
         if me is None:
             continue
-        if me["faces"] >= min_faces:
+        if not is_small(me):
             continue                    # grown past the threshold by a merge
         if mode == SMALL_FLAG or (not use_cells and not me["bbox"]):
             flagged.append(name)
             continue
+        size = (lambda v: v["area"]) if min_area is not None else (lambda v: v["faces"])
         if use_cells:
-            neighbours = [(v["faces"], n) for n, v in live.items()
-                          if n != name and _cells_share_a_side(me["cells"], v["cells"])]
+            # first the tiles whose OWN cell is beside it (the cell next door),
+            # then those reached through cells they already absorbed
+            neighbours = [(size(v), n) for n, v in live.items()
+                          if n != name and _cells_share_a_side(me["cells"], {v["own"]})]
+            if not neighbours:
+                neighbours = [(size(v), n) for n, v in live.items()
+                              if n != name and _cells_share_a_side(me["cells"], v["cells"])]
         else:
-            neighbours = [(v["faces"], n) for n, v in live.items()
+            neighbours = [(size(v), n) for n, v in live.items()
                           if n != name and v["bbox"] and bboxes_touch(me["bbox"], v["bbox"])]
         if not neighbours:
             flagged.append(name)
             continue
         _, into = max(neighbours)
         live[into]["faces"] += me["faces"]
+        live[into]["area"] += me["area"]
         live[into]["cells"] |= me["cells"]
         if use_cells and live[into]["bbox"] and me["bbox"]:
             live[into]["bbox"] = _union(live[into]["bbox"], me["bbox"])   # informative only
@@ -429,6 +474,9 @@ def plan_small_tiles(stats: Sequence[Dict[str, object]], min_faces: int,
         final[small_name] = into
     return {"small": small, "merges": [(s, final[s]) for s, _ in merges],
             "flagged": flagged, "faces_after": {n: v["faces"] for n, v in live.items()},
+            "area_after": {n: v["area"] for n, v in live.items()},
+            "rule": ("plan area under %.2f m²" % min_area) if min_area is not None
+                    else ("fewer than %d faces" % min_faces),
             "neighbours_by": "grid cells" if use_cells else "bounding boxes (sides only)"}
 
 
