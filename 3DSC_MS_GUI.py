@@ -2071,7 +2071,8 @@ class MetashapeTools:
                                    use_tileset_transform=bool(o["use_tileset_transform"]),
                                    screen_space_error=float(o["screen_space_error"]),
                                    folder_depth=int(o["folder_depth"]),
-                                   clip_to_boundary=bool(o["clip_to_boundary"]))
+                                   clip_to_boundary=bool(o["clip_to_boundary"]),
+                                   clip_to_region=bool(o.get("clip_to_region", False)))
         finally:
             self._undo(undo)          # the project is never left corrected
         check = ""

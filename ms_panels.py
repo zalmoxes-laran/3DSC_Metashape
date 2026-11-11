@@ -866,7 +866,13 @@ class TexturingDialog(QtWidgets.QDialog):
 
 # ── Tileset ──────────────────────────────────────────────────────────────────
 
-SSE_PRESETS = (("desktop", 16), ("web", 24), ("mobile", 32))
+# Measured 11 Nov 2026 (Templu Mare 2015, the same crop exported at 16, 24, 32):
+# the value changes no tile and no texture; every tile declares a geometric error
+# = value × its texel. A viewer refines a tile when that error, projected, passes
+# its own threshold (16 px by default), so in such a viewer a texel is drawn on
+# up to 16 / value pixels: 16 = full detail, 8 = up to 2 px, 4 = up to 4 px.
+VIEWER_DEFAULT_SSE = 16
+SSE_PRESETS = (("full detail", 16), ("web", 8), ("mobile", 4))
 
 
 class TilesetDialog(QtWidgets.QDialog):
@@ -877,8 +883,9 @@ class TilesetDialog(QtWidgets.QDialog):
         self.setWindowTitle("3DSC · Tileset (Cesium 3D Tiles)")
         self.setMinimumWidth(620)
         lay = QtWidgets.QVBoxLayout(self)
-        lay.addWidget(note("The quadtree for the web, from the texturable master. The screen error "
-                           "decides how many tiles a viewer draws: higher, fewer."))
+        lay.addWidget(note("The quadtree for the web, from the texturable master. The screen space "
+                           "error is written into the file as each tile's geometric error: lower "
+                           "values give lighter scenes in a viewer at its usual setting (16)."))
         f = QtWidgets.QFormLayout()
         self.chunk = _chunk_combo(doc, doc.chunk)
         self.chunk.currentIndexChanged.connect(self.fill_tiled)
@@ -889,12 +896,18 @@ class TilesetDialog(QtWidgets.QDialog):
         f.addRow("", self.build)
         srow = QtWidgets.QHBoxLayout()
         self.sse = _ispin(16, 1, 256)
+        self.sse.setToolTip("Each tile declares a geometric error = this value × its texel. Same tiles, "
+                            "same textures: only what the viewer is told changes.")
         srow.addWidget(self.sse)
         for name, v in SSE_PRESETS:
             b = QtWidgets.QPushButton("%s %d" % (name, v))
             b.clicked.connect(lambda _=False, v=v: self.sse.setValue(v))
             srow.addWidget(b)
         f.addRow("Screen space error", srow)
+        self.sse_eq = QtWidgets.QLabel()
+        self.sse_eq.setWordWrap(True)
+        self.sse.valueChanged.connect(self._sse_eq)
+        f.addRow("", self.sse_eq)
         self.version = QtWidgets.QComboBox()
         self.version.addItems(["1.1", "1.0"])
         f.addRow("Tileset version", self.version)
@@ -936,9 +949,22 @@ class TilesetDialog(QtWidgets.QDialog):
         lay.addLayout(f)
         lay.addWidget(_buttons(self, "Export"))
         self.fill_tiled()
+        self._sse_eq()
 
     def _chunk(self):
         return _chunk_by_key(self.tool.doc, self.chunk.currentData())
+
+    def _sse_eq(self):
+        v = self.sse.value()
+        px = VIEWER_DEFAULT_SSE / float(v)
+        if abs(px - 1.0) < 1e-6:
+            txt = "in a viewer at %d: each texel on about 1 screen pixel (full detail)" % VIEWER_DEFAULT_SSE
+        elif px > 1:
+            txt = "in a viewer at %d: a texel on up to %.1f pixels — fewer tiles, lighter" % (VIEWER_DEFAULT_SSE, px)
+        else:
+            txt = ("in a viewer at %d: more detail than the screen shows (%.2f px per texel) — "
+                   "more tiles, heavier" % (VIEWER_DEFAULT_SSE, px))
+        self.sse_eq.setText(txt)
 
     def fill_tiled(self):
         self.tiled.clear()

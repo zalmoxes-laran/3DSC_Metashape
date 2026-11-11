@@ -23,7 +23,7 @@ Two words are kept apart: a **block** is a piece of mesh physically cut (one fil
 4. **Blocks…** — the cut of the tileable master on a grid **turned with the monument** and tight on the mesh (see below), with the checks of `ms_blocks`.
 5. **Texturing…** — the Demetrescu-D'Annibale rule, **one row per model** (several models of a chunk are textured one by one), with a live simulation (pages, texel, memory) and the reference. While it runs: model N of M, done and left, time left weighted by pages, expected end, and *Stop after this one*.
 6. **LODs + Normal Maps** (blocks).
-7. **Tileset…** — Cesium 3D Tiles (.3tz or folder) with the **screen space error** chosen (desktop 16 / web 24 / mobile 32), version, KTX2/JPEG, Draco, heights onto EGM2008 for that export only, and a check read from the written file.
+7. **Tileset…** — Cesium 3D Tiles (.3tz or folder) with the **screen space error** chosen (full detail 16 / web 8 / mobile 4: it is written as each tile's geometric error = value × texel, so in a viewer at 16 lower values mean lighter scenes), version, KTX2/JPEG, Draco, heights onto EGM2008 for that export only, and a check read from the written file.
 8. **Export ›** blocks, models, active model with shift, undistorted images.
 - **Utility ›** Rename Chunks (pattern `{n}`, `{name}`, `{model}`; the names become file names) · Flag LOD0 (old STEP1).
 - **Help ›** Documentation of 3DSC for Metashape · About · Rule and References.

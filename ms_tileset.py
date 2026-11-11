@@ -46,9 +46,9 @@ def glb_primitives(data: bytes) -> Optional[int]:
     if data[:4] == b"b3dm":
         ft_json, ft_bin, bt_json, bt_bin = struct.unpack("<4I", data[12:28])
         data = data[28 + ft_json + ft_bin + bt_json + bt_bin:]
-    if data[:4] != b"glTF":
+    if data[:4] != b"glTF" or data[16:20] != b"JSON":
         return None
-    length = struct.unpack("<I", data[16:20])[0]
+    length = struct.unpack("<I", data[12:16])[0]      # header 12 bytes, then the JSON chunk
     doc = json.loads(data[20:20 + length].decode("utf-8"))
     return sum(len(m.get("primitives", [])) for m in doc.get("meshes", []))
 
@@ -75,6 +75,7 @@ def inspect(path: str, max_tiles: int = 200000) -> Dict[str, object]:
     root_name = "tileset.json"
     tileset = json.loads(src.read(root_name))
     levels: Dict[int, int] = {}
+    errors: Dict[int, List[float]] = {}
     prims: List[int] = []
     root_pos = None
     t = tileset.get("root", {}).get("transform")
@@ -95,6 +96,8 @@ def inspect(path: str, max_tiles: int = 200000) -> Dict[str, object]:
         tile, depth, base = stack.pop()
         seen += 1
         levels[depth] = levels.get(depth, 0) + 1
+        if tile.get("geometricError") is not None:
+            errors.setdefault(depth, []).append(float(tile["geometricError"]))
         for uri in content_uris(tile):
             name = posixpath.normpath(posixpath.join(base, uri))
             if uri.lower().endswith(".json"):
@@ -106,7 +109,7 @@ def inspect(path: str, max_tiles: int = 200000) -> Dict[str, object]:
                 continue
             try:
                 n = glb_primitives(src.read(name))
-            except (KeyError, OSError, ValueError, struct.error):
+            except (KeyError, OSError, ValueError, struct.error, UnicodeDecodeError):
                 n = None
             if n is not None:
                 prims.append(n)
@@ -121,6 +124,8 @@ def inspect(path: str, max_tiles: int = 200000) -> Dict[str, object]:
         "root": root_pos,
         "version": tileset.get("asset", {}).get("version"),
         "geometric_error": tileset.get("geometricError"),
+        "errors": {d: (min(v), max(v)) for d, v in sorted(errors.items())},
+        "refine": tileset.get("root", {}).get("refine"),
     }
 
 
@@ -131,6 +136,10 @@ def report(info: Dict[str, object]) -> str:
              "primitives per tile: %s (max %s)" % ("%.2f" % pm if pm is not None else "—",
                                                    info["primitives_max"]),
              "size: %.1f MB · 3D Tiles %s" % (info["bytes"] / 1e6, info["version"])]
+    if info.get("errors"):
+        lines.append("geometric error per level (m): " + " · ".join(
+            "L%d %s" % (d, ("%.3g" % lo) if abs(hi - lo) < 1e-9 else "%.3g–%.3g" % (lo, hi))
+            for d, (lo, hi) in info["errors"].items()))
     r = info.get("root")
     if r:
         lines.append("root: %.6f N %.6f E, h %.2f m (ellipsoidal, from the file)"
