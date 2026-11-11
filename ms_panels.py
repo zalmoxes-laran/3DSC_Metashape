@@ -1035,6 +1035,62 @@ class OperatorDialog(QtWidgets.QDialog):
         super().accept()
 
 
+# ── Progress of a batch ──────────────────────────────────────────────────────
+
+class BatchProgress(QtWidgets.QDialog):
+    """Where a batch stands: item N of M, the current item, time spent and left.
+    «Stop» ends the batch after the current item, so nothing is left half done."""
+
+    def __init__(self, title, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("3DSC · " + title)
+        self.setMinimumWidth(560)
+        self.setWindowModality(QtCore.Qt.WindowModal)
+        self.stop_asked = False
+        lay = QtWidgets.QVBoxLayout(self)
+        self.head = QtWidgets.QLabel()
+        self.head.setStyleSheet("font-weight: bold;")
+        self.overall = QtWidgets.QProgressBar()
+        self.overall.setRange(0, 1000)
+        self.overall.setTextVisible(False)
+        self.counts = QtWidgets.QLabel()
+        self.item = QtWidgets.QLabel()
+        self.item.setStyleSheet("margin-top: 8px;")
+        self.item_bar = QtWidgets.QProgressBar()
+        self.item_bar.setRange(0, 100)
+        self.times = QtWidgets.QLabel()
+        for w in (self.head, self.overall, self.counts, self.item, self.item_bar, self.times):
+            lay.addWidget(w)
+        row = QtWidgets.QHBoxLayout()
+        row.addStretch(1)
+        self.b_stop = QtWidgets.QPushButton("Stop after this one")
+        self.b_stop.clicked.connect(self.ask_stop)
+        row.addWidget(self.b_stop)
+        lay.addLayout(row)
+
+    def ask_stop(self):
+        self.stop_asked = True
+        self.b_stop.setEnabled(False)
+        self.b_stop.setText("Stopping after this one…")
+
+    def show_state(self, st, name, detail, stage, stage_fraction):
+        import time as _t
+        import ms_progress
+        self.head.setText("%d of %d · %s" % (st["index"] + 1, st["items"], name))
+        self.overall.setValue(int(round(1000 * st["overall"])))
+        self.counts.setText("%d done · %d to go · %.0f %% of the work" % (st["done"], st["remaining"], 100 * st["overall"]))
+        self.item.setText("%s — %s" % (detail, stage))
+        self.item_bar.setValue(int(round(100 * stage_fraction)))
+        finish = _t.strftime("%H:%M", _t.localtime(st["finish"])) if st["finish"] else "—"
+        self.times.setText("elapsed %s · left about %s · ends around %s" % (
+            ms_progress.fmt_duration(st["elapsed"]), ms_progress.fmt_duration(st["left"]), finish))
+        QtWidgets.QApplication.processEvents()
+
+    def closeEvent(self, ev):
+        self.ask_stop()
+        ev.ignore()
+
+
 # ── Rename ───────────────────────────────────────────────────────────────────
 
 class RenameDialog(QtWidgets.QDialog):

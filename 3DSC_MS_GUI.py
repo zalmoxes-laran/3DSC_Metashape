@@ -1847,23 +1847,75 @@ class MetashapeTools:
         if dlg.exec_() != P.QtWidgets.QDialog.Accepted:
             return
         o = dlg.options()
-        done, lines = 0, []
+        # the plan: every model with the pages the rule gives it (the weight of its time)
+        plan = []
         for ck, mk in o["targets"]:
             c = self._get_chunk_by_key(ck)
             m = [k for k in (c.models if c else []) if k.key == mk]
             if not m:
                 continue
-            res = self.texture_model(c, m[0], o["texel"], o["atlas"], o["ratio"], o["cap"])
-            lines.append("%s · %s: %d pages, texel %.2f mm" % (c.label, m[0].label or m[0].key,
-                                                                res["pages"], res["texel"]))
-            done += 1
+            area = self._meta_get(m[0], "3dsc_area_m2")
+            sim = ms_dd.simulate(float(area), o["texel"], o["atlas"], o["ratio"], o["cap"]) if area else None
+            pages = (sim["pages_cap"] if sim["over"] else sim["pages"]) if sim else 1
+            plan.append((c, m[0], pages))
+        if not plan:
+            return
+        ps.app.messageBox(self.texture_batch(plan, o))
+
+    def texture_batch(self, plan, o):
+        """Texture ``plan`` = [(chunk, model, pages)] with a progress window
+        (item N of M, time left weighted by pages); → the report text."""
+        import ms_progress
+        P = self._panels()
+        tracker = ms_progress.Tracker([p for _c, _m, p in plan])
+        win = P.BatchProgress("Texturing", P._parent())
+        win.show()
+        split = ms_progress.Split(["UV mapping", "building the texture"], [0.3, 0.7])
+        throttle = ms_progress.Throttle(5)
+        lines, stopped = [], False
+        for i, (c, m, pages) in enumerate(plan):
+            if win.stop_asked:
+                stopped = True
+                break
+            tracker.begin(i)
+            name = m.label or "model %d" % (m.key + 1)
+            detail = "%s · %d pages of %d px" % (c.label, pages, o["atlas"])
+
+            stage_t = {"UV mapping": [None, None], "building the texture": [None, None]}
+
+            def on_part(stage, fraction, name=name, detail=detail):
+                now = ms_progress.time.time()
+                t = stage_t[stage]
+                if t[0] is None:
+                    t[0] = now
+                t[1] = now
+                tracker.part(split.overall(stage, fraction))
+                if throttle.ready(fraction):          # a few times a second is enough
+                    win.show_state(tracker.state(), name, detail, stage, fraction)
+                    ps.app.update()
+
+            on_part("UV mapping", 0.0)
+            res = self.texture_model(c, m, o["texel"], o["atlas"], o["ratio"], o["cap"], on_part=on_part)
+            # how the time of a block divides between UV mapping and texture, learnt as we go
+            split.learn([(t[1] - t[0]) if t[0] is not None else 0.0 for t in
+                         (stage_t["UV mapping"], stage_t["building the texture"])])
+            tracker.end()
+            st = tracker.state()
+            print("[3DSC texturing] %d/%d %s done · elapsed %s · left about %s" % (
+                i + 1, len(plan), name, ms_progress.fmt_duration(st["elapsed"]),
+                ms_progress.fmt_duration(st["left"])))
+            lines.append("%s · %s: %d pages, texel %.2f mm" % (c.label, name, res["pages"], res["texel"]))
             ps.app.update()
-        ps.app.messageBox("Textured models: %d (texel %.2f mm, atlas %d, UV ratio %.2f%s).\n\n%s" % (
-            done, o["texel"], o["atlas"], o["ratio"], ", max %d pages" % o["cap"] if o["cap"] else "",
-            "\n".join(lines[:30])))
+        st = tracker.state()
+        win.hide()
+        win.deleteLater()
+        return ("%s: %d of %d models textured in %s (texel %.2f mm, atlas %d, UV ratio %.2f%s).\n\n%s" % (
+            "Stopped" if stopped else "Done", len(lines), len(plan), ms_progress.fmt_duration(st["elapsed"]),
+            o["texel"], o["atlas"], o["ratio"], ", max %d pages" % o["cap"] if o["cap"] else "",
+            "\n".join(lines[:30]) + ("\n…" if len(lines) > 30 else "")))
 
     def texture_model(self, chunk, model, texel=ms_dd.TEXEL_MM, atlas=ms_dd.ATLAS_PX,
-                      ratio=ms_dd.UV_RATIO, cap=None):
+                      ratio=ms_dd.UV_RATIO, cap=None, on_part=None):
         """One model of a chunk, textured with the D-D rule: it becomes the
         active model, gets its own UV pages and texture; the others keep theirs."""
         chunk.model = model
@@ -1871,9 +1923,13 @@ class MetashapeTools:
         sim = ms_dd.simulate(area, texel, atlas, ratio, cap)
         pages = sim["pages_cap"] if sim["over"] else sim["pages"]
         got = sim["texel_cap"] if sim["over"] else sim["texel"]
-        chunk.buildUV(mapping_mode=ps.GenericMapping, page_count=pages, texture_size=atlas)
-        chunk.buildTexture(blending_mode=ps.MosaicBlending, texture_size=atlas,
-                           fill_holes=True, ghosting_filter=True)
+        uv = {"mapping_mode": ps.GenericMapping, "page_count": pages, "texture_size": atlas}
+        tx = {"blending_mode": ps.MosaicBlending, "texture_size": atlas, "fill_holes": True, "ghosting_filter": True}
+        if on_part is not None:      # Metashape reports 0..100 for each operation
+            uv["progress"] = lambda p: on_part("UV mapping", p / 100.0)
+            tx["progress"] = lambda p: on_part("building the texture", p / 100.0)
+        chunk.buildUV(**uv)
+        chunk.buildTexture(**tx)
         model.meta["3dsc_dd"] = json.dumps({
             "area_m2": round(area, 3), "pages": pages, "rule_pages": sim["pages"],
             "texel_mm": round(got, 4), "texel_target_mm": texel, "atlas_px": atlas, "uv_ratio": ratio,

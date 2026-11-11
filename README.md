@@ -21,7 +21,7 @@ Two words are kept apart: a **block** is a piece of mesh physically cut (one fil
 2. **Import ›** **Models…** (files or a folder, shift on/off, one chunk per model copied from the **master**, or all in one chunk) · **Photos from Another Project…**
 3. **Masters…** — an **inventory** first: every model of the chunk with its faces, density and part in the chain, what is missing and from which model it can be decimated. Nothing is computed when the panel opens: «Measure» counts the faces and measures the surface once (on the lightest model; 40.9 M faces take about 13 s), and keeps the numbers in the model's meta. «Make what is missing» lists the exact decimations and asks before running them.
 4. **Blocks…** — the cut of the tileable master on a grid **turned with the monument** and tight on the mesh (see below), with the checks of `ms_blocks`.
-5. **Texturing…** — the Demetrescu-D'Annibale rule, **one row per model** (several models of a chunk are textured one by one), with a live simulation (pages, texel, memory) and the reference.
+5. **Texturing…** — the Demetrescu-D'Annibale rule, **one row per model** (several models of a chunk are textured one by one), with a live simulation (pages, texel, memory) and the reference. While it runs: model N of M, done and left, time left weighted by pages, expected end, and *Stop after this one*.
 6. **LODs + Normal Maps** (blocks).
 7. **Tileset…** — Cesium 3D Tiles (.3tz or folder) with the **screen space error** chosen (desktop 16 / web 24 / mobile 32), version, KTX2/JPEG, Draco, heights onto EGM2008 for that export only, and a check read from the written file.
 8. **Export ›** blocks, models, active model with shift, undistorted images.
