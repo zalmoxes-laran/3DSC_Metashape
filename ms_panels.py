@@ -288,7 +288,7 @@ class ImportDialog(QtWidgets.QDialog):
         paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
             self, "Models", "", "3D models (%s);;All (*)" % " ".join("*" + e for e in MODEL_EXT))
         for p in paths:
-            self.files.addItem(p)
+            self._add_path(p)
 
     def add_folder(self):
         d = QtWidgets.QFileDialog.getExistingDirectory(self, "Folder of models")
@@ -296,7 +296,7 @@ class ImportDialog(QtWidgets.QDialog):
             return
         for fn in sorted(os.listdir(d)):
             if fn.lower().endswith(MODEL_EXT):
-                self.files.addItem(os.path.join(d, fn))
+                self._add_path(os.path.join(d, fn))
         # a SHIFT.txt beside the models, and no shift loaded yet: offer it
         if self.tool.global_shift_vector is None:
             for fn in os.listdir(d):
@@ -307,6 +307,12 @@ class ImportDialog(QtWidgets.QDialog):
                         self.refresh_shift()
                         self.use_shift.setChecked(True)
                     break
+
+    def _add_path(self, path):
+        it = QtWidgets.QListWidgetItem(os.path.basename(path))
+        it.setData(QtCore.Qt.UserRole, path)
+        it.setToolTip(path)
+        self.files.addItem(it)
 
     def remove(self):
         for it in self.files.selectedItems():
@@ -324,7 +330,8 @@ class ImportDialog(QtWidgets.QDialog):
         self.fill_masters(m.key)
 
     def options(self):
-        return {"paths": [self.files.item(i).text() for i in range(self.files.count())],
+        return {"paths": [self.files.item(i).data(QtCore.Qt.UserRole) or self.files.item(i).text()
+                          for i in range(self.files.count())],
                 "use_shift": self.use_shift.isChecked(),
                 "one_chunk": self.r_one.isChecked(),
                 "master_key": self.master.currentData()}
@@ -702,8 +709,10 @@ class TexturingDialog(QtWidgets.QDialog):
         self.atlas.currentIndexChanged.connect(self.simulate)
 
         self.table = QtWidgets.QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["Chunk · model", "Area m²", "Faces", "Pages", "Texel mm", "MB (raw)"])
+        self.table.setHorizontalHeaderLabels(["Model — chunk", "Area m²", "Faces", "Pages", "Texel mm", "MB (raw)"])
         self.table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
+        for col in range(1, 6):
+            self.table.horizontalHeader().setSectionResizeMode(col, QtWidgets.QHeaderView.ResizeToContents)
         self.table.verticalHeader().setVisible(False)
         lay.addWidget(self.table, 1)
         srow = QtWidgets.QHBoxLayout()
@@ -723,7 +732,7 @@ class TexturingDialog(QtWidgets.QDialog):
         self.b_new.clicked.connect(self.new_project)
         lay.addWidget(self.b_new)
         lay.addWidget(bibliography_box())
-        lay.addWidget(_buttons(self, "Texture the ticked chunks"))
+        lay.addWidget(_buttons(self, "Texture the ticked models"))
         self.rows = []
         self.fill()
 
@@ -744,7 +753,7 @@ class TexturingDialog(QtWidgets.QDialog):
                 area = float(area) if area else None
                 r = self.table.rowCount()
                 self.table.insertRow(r)
-                lab = "%s · %s" % (c.label, m.label or "model %d" % (m.key + 1))
+                lab = "%s — %s" % (m.label or "model %d" % (m.key + 1), c.label)
                 it = QtWidgets.QTableWidgetItem(lab + ("  (master)" if is_master(c) else ""))
                 it.setFlags(QtCore.Qt.ItemIsUserCheckable | QtCore.Qt.ItemIsEnabled)
                 block = (m.label or "").startswith("block_") or self.tool._meta_get(c, "3dsc_workflow_block_name")
@@ -760,6 +769,11 @@ class TexturingDialog(QtWidgets.QDialog):
             pass
         self.table.itemChanged.connect(lambda *_: self.simulate())
         self.simulate()
+        # open on the first ticked row (the blocks), not on the top of the list
+        for r in range(self.table.rowCount()):
+            if self.table.item(r, 0).checkState() == QtCore.Qt.Checked:
+                self.table.scrollToItem(self.table.item(r, 0), QtWidgets.QAbstractItemView.PositionAtTop)
+                break
 
     def measure(self):
         """Measure the area of the ticked rows (or all, if none is ticked)."""
